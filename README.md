@@ -78,8 +78,9 @@ backups, monitoring and a persistent private data volume.
 
 The first admin can use the content and ERP screens and invite role-based
 accounts. Invitation links are single-use, expire after seven days, and let the
-recipient set their own password. Resending rotates the previous link. Invite
-delivery requires Resend configuration in the private runtime. Admins can
+recipient set their own password. Admins can revoke an open invitation or
+resend it, which rotates the previous link after delivery. Invite delivery
+requires Resend configuration in the private runtime. Admins can
 change account roles or deactivate accounts; each change is audited,
 idempotent, and revokes the affected account's sessions. The last
 active admin cannot be removed. Every signed-in user can change their password
@@ -99,8 +100,8 @@ encoded in 64 hexadecimal characters. Back up that key with the private
 database: startup fails closed if MFA-enabled accounts exist and the key is
 missing. The authenticator secret is encrypted at rest with AES-256-GCM. The
 key is separate from `AUTH0_*`, which configures the optional MCP resource
-server. Tenant isolation, invitation revocation, and production-grade team
-administration are not implemented yet.
+server. Tenant isolation and production-grade team administration are not
+implemented yet.
 
 ## Verify the modules
 

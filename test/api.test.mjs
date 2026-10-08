@@ -181,6 +181,17 @@ test('authenticated REST APIs complete a CMS and service ERP workflow', async ()
   assert.equal(invitationWithoutMail.payload.error, 'EMAIL_DELIVERY_DISABLED');
   const invitationsWithoutMail = await request('/api/user-invitations', { cookie: admin.cookie });
   assert.deepEqual(invitationsWithoutMail.payload.data, []);
+  const anonymousInviteRevoke = await request('/api/user-invitations/1', { method: 'DELETE', body: {} });
+  assert.equal(anonymousInviteRevoke.response.status, 403);
+  const inviteRevokeWithoutCsrf = await request('/api/user-invitations/1', {
+    cookie: admin.cookie, method: 'DELETE', body: {}, idempotencyKey: 'api-invitation-revoke-001',
+  });
+  assert.equal(inviteRevokeWithoutCsrf.response.status, 403);
+  const unknownInviteRevoke = await request('/api/user-invitations/999', {
+    cookie: admin.cookie, csrf: admin.csrf, method: 'DELETE', body: {}, idempotencyKey: 'api-invitation-revoke-002',
+  });
+  assert.equal(unknownInviteRevoke.response.status, 404);
+  assert.equal(unknownInviteRevoke.payload.error, 'INVITATION_NOT_FOUND');
 
   const content = {
     type: 'page',

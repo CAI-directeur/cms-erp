@@ -902,6 +902,7 @@ function createUserPanel() {
       const expiration = document.createElement('p');
       expiration.textContent = `${invitation.role} · verloopt ${new Date(invitation.expiresAt).toLocaleString('nl-NL')}`;
       details.append(email, expiration);
+      const actions = document.createElement('div'); actions.className = 'record-actions';
       const resend = document.createElement('button'); resend.type = 'button'; resend.className = 'button-secondary'; resend.textContent = 'Nieuwe link sturen';
       resend.addEventListener('click', async () => {
         resend.disabled = true;
@@ -914,7 +915,20 @@ function createUserPanel() {
           resend.disabled = false;
         }
       });
-      row.append(details, resend); invitationList.append(row);
+      const revoke = document.createElement('button'); revoke.type = 'button'; revoke.className = 'button-danger'; revoke.textContent = 'Intrekken';
+      revoke.addEventListener('click', async () => {
+        revoke.disabled = true;
+        try {
+          await postIntent(`/api/user-invitations/${invitation.id}`, {}, { sensitive: true, scope: `user-invitation-revoke-${invitation.id}`, method: 'DELETE' });
+          message(feedback, `Uitnodiging voor ${invitation.email} ingetrokken.`);
+          await loadInvitations();
+        } catch (error) {
+          message(feedback, errorText('Uitnodiging niet ingetrokken', error), true);
+          revoke.disabled = false;
+        }
+      });
+      actions.append(resend, revoke);
+      row.append(details, actions); invitationList.append(row);
     }
     if (!invitations.length) invitationList.textContent = 'Geen openstaande uitnodigingen.';
   }

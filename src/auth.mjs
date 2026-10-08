@@ -154,6 +154,14 @@ export class AuthStore {
         invitation_id INTEGER NOT NULL REFERENCES app_user_invitations(id) ON DELETE CASCADE,
         PRIMARY KEY(actor_id,idem_key)
       );
+      CREATE TABLE IF NOT EXISTS app_user_invitation_revoke_idempotency (
+        actor_id INTEGER NOT NULL REFERENCES app_users(id),
+        idem_key TEXT NOT NULL,
+        fingerprint TEXT NOT NULL,
+        response_json TEXT NOT NULL CHECK(json_valid(response_json)),
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY(actor_id,idem_key)
+      );
       CREATE TABLE IF NOT EXISTS app_user_invitation_audit (
         id INTEGER PRIMARY KEY,
         invitation_id INTEGER NOT NULL REFERENCES app_user_invitations(id),
@@ -567,6 +575,50 @@ export class AuthStore {
       WHERE delivery_state='active' AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at>?
       ORDER BY created_at DESC,id DESC
     `).all(now);
+  }
+
+  revokeInvitation(actor, key, invitationId) {
+    if (actor?.role !== 'admin' || !Number.isSafeInteger(actor.id) || actor.id < 1) return { error: 'FORBIDDEN' };
+    if (!Number.isSafeInteger(invitationId) || invitationId < 1) return { error: 'INVALID_INVITATION' };
+    if (typeof key !== 'string' || !/^[A-Za-z0-9._:-]{8,100}$/u.test(key)) return { error: 'IDEMPOTENCY_KEY_REQUIRED' };
+    const fingerprint = createHmac('sha256', this.#csrfSecret).update(JSON.stringify({ invitationId }), 'utf8').digest('hex');
+    const now = Date.now();
+    this.#db.exec('BEGIN IMMEDIATE');
+    try {
+      const currentActor = this.#db.prepare('SELECT role,active FROM app_users WHERE id=?').get(actor.id);
+      if (!currentActor || currentActor.role !== 'admin' || currentActor.active !== 1) {
+        this.#db.exec('ROLLBACK');
+        return { error: 'FORBIDDEN' };
+      }
+      const prior = this.#db.prepare(`
+        SELECT fingerprint,response_json FROM app_user_invitation_revoke_idempotency WHERE actor_id=? AND idem_key=?
+      `).get(actor.id, key);
+      if (prior) {
+        this.#db.exec('COMMIT');
+        return prior.fingerprint === fingerprint ? JSON.parse(prior.response_json) : { error: 'IDEMPOTENCY_CONFLICT' };
+      }
+      const invitation = this.#db.prepare(`
+        SELECT id,email,role,delivery_state,expires_at,accepted_at,revoked_at
+        FROM app_user_invitations WHERE id=?
+      `).get(invitationId);
+      if (!invitation) { this.#db.exec('ROLLBACK'); return { error: 'INVITATION_NOT_FOUND' }; }
+      if (invitation.delivery_state !== 'active' || invitation.accepted_at !== null || invitation.revoked_at !== null || invitation.expires_at <= now) {
+        this.#db.exec('ROLLBACK');
+        return { error: 'INVITATION_NOT_ACTIVE' };
+      }
+      this.#db.prepare('UPDATE app_user_invitations SET revoked_at=? WHERE id=? AND revoked_at IS NULL AND accepted_at IS NULL').run(now, invitationId);
+      this.#db.prepare("INSERT INTO app_user_invitation_audit(invitation_id,actor_id,event,occurred_at) VALUES(?,?,'revoked',?)").run(invitationId, actor.id, now);
+      const response = { data: { id: invitationId, email: invitation.email, revoked: true } };
+      this.#db.prepare(`
+        INSERT INTO app_user_invitation_revoke_idempotency(actor_id,idem_key,fingerprint,response_json,created_at)
+        VALUES(?,?,?,?,?)
+      `).run(actor.id, key, fingerprint, JSON.stringify(response), now);
+      this.#db.exec('COMMIT');
+      return response;
+    } catch (error) {
+      try { this.#db.exec('ROLLBACK'); } catch { /* preserve the original error */ }
+      throw error;
+    }
   }
 
   createInvitation(actor, key, { email: emailValue, role, token } = {}) {

@@ -364,6 +364,22 @@ async function route(req, res) {
       return json(res, 503, { error: 'INVITATION_DELIVERY_FAILED', requestId });
     }
   }
+  const invitationMatch = /^\/api\/user-invitations\/([1-9]\d*)$/u.exec(url.pathname);
+  if (invitationMatch && req.method === 'DELETE') {
+    const actor = auth.actor(req);
+    if (actor?.role !== 'admin') return json(res, 403, { error: 'FORBIDDEN', requestId });
+    if (req.headers.origin !== allowedOrigin || !auth.verifyCsrf(req, actor)) return json(res, 403, { error: 'CSRF_REJECTED', requestId });
+    const input = await readJson(req);
+    if (!input || Object.keys(input).length !== 0) return json(res, 400, { error: 'INVALID_INVITATION', requestId });
+    const result = auth.revokeInvitation(actor, req.headers['idempotency-key'], Number(invitationMatch[1]));
+    if (result.error) {
+      const status = result.error === 'INVITATION_NOT_FOUND' ? 404
+        : result.error === 'FORBIDDEN' ? 403
+          : ['IDEMPOTENCY_CONFLICT', 'INVITATION_NOT_ACTIVE'].includes(result.error) ? 409 : 400;
+      return json(res, status, { error: result.error, requestId });
+    }
+    return json(res, 200, result);
+  }
   const userMatch = /^\/api\/users\/([1-9]\d*)$/u.exec(url.pathname);
   if (userMatch && req.method === 'PATCH') {
     const actor = auth.actor(req);

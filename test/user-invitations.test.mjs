@@ -113,3 +113,22 @@ test('expired invitations cannot be accepted and do not appear in the pending li
   assert.equal(f.store.listInvitations().length, 0);
   assert.equal(f.store.acceptInvitation(invitationToken, 'test-only-expired-password-1234').error, 'INVALID_OR_EXPIRED_INVITATION');
 });
+
+test('admin can revoke a pending invitation with durable idempotent audit', async () => {
+  const f = await fixture();
+  const invitationToken = token();
+  const invitation = f.store.createInvitation(f.admin, 'invite-idempotency-007', {
+    email: 'revoke@example.test', role: 'reader', token: invitationToken,
+  });
+  assert.equal(f.store.activateInvitation(invitationToken), true);
+  const revoked = f.store.revokeInvitation(f.admin, 'invite-revoke-idempotency-001', invitation.data.id);
+  assert.deepEqual(revoked.data, { id: invitation.data.id, email: 'revoke@example.test', revoked: true });
+  assert.deepEqual(f.store.revokeInvitation(f.admin, 'invite-revoke-idempotency-001', invitation.data.id), revoked);
+  assert.equal(f.store.listInvitations().length, 0);
+  assert.equal(f.store.acceptInvitation(invitationToken, 'test-only-revoked-password-1234').error, 'INVALID_OR_EXPIRED_INVITATION');
+  assert.equal(f.store.revokeInvitation(f.admin, 'invite-revoke-idempotency-002', invitation.data.id).error, 'INVITATION_NOT_ACTIVE');
+  const database = new DatabaseSync(f.database);
+  const audit = database.prepare('SELECT event FROM app_user_invitation_audit ORDER BY id').all().map((row) => row.event);
+  assert.deepEqual(audit, ['created', 'revoked']);
+  database.close();
+});
