@@ -1,0 +1,23 @@
+name: Service operations checks
+
+on:
+  push:
+    branches: [main, "integration/**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  node-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.19.0
+      - name: Run domain, service, HTTP and import tests
+        run: >-
+          node --test integrations/wordpress-contract/domain.test.mjs
+          modules/service-operations/*.test.mjs
+          integrations/wordpress-import/*.test.mjs
