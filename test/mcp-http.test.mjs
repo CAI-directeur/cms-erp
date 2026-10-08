@@ -4,7 +4,7 @@ import { createServer } from 'node:http';
 import { test } from 'node:test';
 import { createMcpEndpoint } from '../src/mcp-http.mjs';
 
-test('MCP HTTP endpoint publishes resource metadata and serves authenticated tool discovery', async (t) => {
+test('MCP HTTP endpoint publishes resource metadata, per-tool scopes, and OAuth challenges', async (t) => {
   let endpoint;
   const server = createServer(async (req, res) => {
     if (await endpoint.handle(req, res)) return;
@@ -54,14 +54,9 @@ test('MCP HTTP endpoint publishes resource metadata and serves authenticated too
   assert.equal(metadata.resource, `${origin}/mcp`);
   assert.ok(metadata.scopes_supported.includes('profile:link'));
 
-  const challengeResponse = await fetch(`${origin}/mcp`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
-  assert.equal(challengeResponse.status, 401);
-  assert.match(challengeResponse.headers.get('www-authenticate'), /oauth-protected-resource\/mcp/u);
-
   const toolsResponse = await fetch(`${origin}/mcp`, {
     method: 'POST',
     headers: {
-      authorization: 'Bearer synthetic-valid-token',
       'content-type': 'application/json',
       accept: 'application/json, text/event-stream',
     },
@@ -75,7 +70,25 @@ test('MCP HTTP endpoint publishes resource metadata and serves authenticated too
   assert.ok(names.includes('cms_list'));
   assert.ok(names.includes('erp_execute_finance'));
   const financeTool = toolsPayload.result.tools.find((tool) => tool.name === 'erp_execute_finance');
-  assert.deepEqual(financeTool._meta.securitySchemes[0].scopes, ['erp:write', 'erp:finance']);
+  assert.deepEqual(financeTool.securitySchemes[0].scopes, ['erp:write', 'erp:finance']);
+
+  const unauthenticatedCall = await fetch(`${origin}/mcp`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
+    body: JSON.stringify({
+      jsonrpc: '2.0', id: 2, method: 'tools/call',
+      params: { name: 'cms_list', arguments: { limit: 5 } },
+    }),
+  });
+  assert.equal(unauthenticatedCall.status, 200);
+  const unauthenticatedEvent = (await unauthenticatedCall.text()).split(/\r?\n/u).find((line) => line.startsWith('data: '));
+  const unauthenticatedPayload = JSON.parse(unauthenticatedEvent.slice('data: '.length));
+  assert.equal(unauthenticatedPayload.result.isError, true);
+  assert.equal(unauthenticatedPayload.result.structuredContent.error, 'AUTHORIZATION_REQUIRED');
+  const authChallenge = unauthenticatedPayload.result._meta['mcp/www_authenticate'][0];
+  assert.match(authChallenge, /oauth-protected-resource\/mcp/u);
+  assert.match(authChallenge, /error="insufficient_scope"/u);
+  assert.match(authChallenge, /error_description=/u);
 
   const financeDenied = await fetch(`${origin}/mcp`, {
     method: 'POST',
@@ -86,11 +99,16 @@ test('MCP HTTP endpoint publishes resource metadata and serves authenticated too
     },
     body: JSON.stringify({
       jsonrpc: '2.0',
-      id: 2,
+      id: 3,
       method: 'tools/call',
       params: { name: 'erp_execute_finance', arguments: { command: 'issue-invoice', input: {}, idempotencyKey: 'synthetic-idem-01' } },
     }),
   });
-  assert.equal(financeDenied.status, 403);
-  assert.match(financeDenied.headers.get('www-authenticate'), /insufficient_scope/u);
+  assert.equal(financeDenied.status, 200);
+  const financeDeniedEvent = (await financeDenied.text()).split(/\r?\n/u).find((line) => line.startsWith('data: '));
+  const financeDeniedPayload = JSON.parse(financeDeniedEvent.slice('data: '.length));
+  assert.equal(financeDeniedPayload.result.isError, true);
+  assert.deepEqual(financeDeniedPayload.result._meta['mcp/www_authenticate'], [
+    `Bearer resource_metadata="${origin}/.well-known/oauth-protected-resource/mcp", error="insufficient_scope", error_description="Authentication is required.", scope="erp:finance"`,
+  ]);
 });

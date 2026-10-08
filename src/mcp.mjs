@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-import { McpServer, requireScopes } from '@modelcontextprotocol/server';
+import { McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 
-const oauthMeta = (scopes) => ({ securitySchemes: [{ type: 'oauth2', scopes }] });
+const oauthSchemes = (scopes) => [{ type: 'oauth2', scopes }];
 const pageSchema = z.object({ limit: z.number().int().min(1).max(100).optional(), offset: z.number().int().min(0).max(1000000).optional() }).strict();
 const cmsPageSchema = pageSchema.extend({ type: z.enum(['page', 'article', 'service', 'project', 'faq']).optional(), status: z.enum(['draft', 'published', 'archived']).optional() });
 const textBlock = z.discriminatedUnion('type', [
@@ -53,6 +53,21 @@ function errorResult(error) {
   };
 }
 
+function authorizationRequired(authInfo, scopes, configuredResourceMetadataUrl) {
+  const missingScopes = scopes.filter((scope) => !authInfo?.scopes?.includes(scope));
+  if (missingScopes.length === 0) return null;
+  const resourceMetadataUrl = authInfo?.resourceMetadataUrl ?? configuredResourceMetadataUrl ??
+    (authInfo?.resource ? `${new URL(authInfo.resource).origin}/.well-known/oauth-protected-resource/mcp` : undefined);
+  const metadata = resourceMetadataUrl ? ` resource_metadata="${resourceMetadataUrl}",` : '';
+  const challenge = `Bearer${metadata} error="insufficient_scope", error_description="Authentication is required.", scope="${missingScopes.join(' ')}"`;
+  return {
+    isError: true,
+    content: [{ type: 'text', text: 'AUTHORIZATION_REQUIRED' }],
+    structuredContent: { error: 'AUTHORIZATION_REQUIRED' },
+    _meta: { 'mcp/www_authenticate': [challenge] },
+  };
+}
+
 function requireActor(auth, authInfo) {
   const identity = authInfo?.extra;
   const actor = auth.actorForExternalIdentity(identity?.issuer, identity?.subject);
@@ -97,23 +112,25 @@ function invokeCommand(operations, auth, actor, command, input, key) {
   }
 }
 
-export function createMcpServer({ auth, content, operations, authInfo, onError = () => {} }) {
+export function createMcpServer({ auth, content, operations, authInfo, resourceMetadataUrl, onError = () => {} }) {
   const server = new McpServer({ name: 'CAI-Techniek CMS ERP', version: '0.2.0' });
   const register = (name, title, description, scopes, inputSchema, annotations, callback) => {
-    server.registerTool(name, {
+    const tool = server.registerTool(name, {
       title,
       description,
       inputSchema,
       annotations,
-      scopeChallenge: requireScopes(...scopes),
-      _meta: oauthMeta(scopes),
+      _meta: {},
     }, async (input) => {
+      const challenge = authorizationRequired(authInfo, scopes, resourceMetadataUrl);
+      if (challenge) return challenge;
       try { return jsonResult(await callback(input)); }
       catch (error) {
         if (error?.status >= 500) { try { onError({ tool: name, code: 'INTERNAL_ERROR' }); } catch { /* logging is best effort */ } }
         return errorResult(error);
       }
     });
+    tool.securitySchemes = oauthSchemes(scopes);
   };
 
   register('get_my_profile', 'Mijn gekoppelde account', 'Toont uitsluitend de Auth0-identiteit van de ingelogde gebruiker en of die aan een actief CMS/ERP-account gekoppeld is. De rol wordt uit de lokale gebruikersadministratie gelezen.', ['profile:read'], z.object({}).strict(), { readOnlyHint: true, destructiveHint: false, openWorldHint: false }, () => {
@@ -149,6 +166,21 @@ export function createMcpServer({ auth, content, operations, authInfo, onError =
   register('erp_execute_finance', 'Financiële ERP-opdracht uitvoeren', 'Voert een factuur-, betalings- of creditnotaboeking uit. Vereist zowel erp:write als erp:finance; de ERP-engine controleert daarnaast de lokale rol, transacties, audit en idempotencyKey.', ['erp:write', 'erp:finance'], financeCommandSchema, { readOnlyHint: false, destructiveHint: true, openWorldHint: false }, ({ command, input, idempotencyKey }) => {
     const actor = requireActor(auth, authInfo);
     return invokeCommand(operations, auth, actor, command, input, idempotencyKey);
+  });
+
+  // The current MCP SDK serializes tool _meta but has no first-class
+  // securitySchemes config field. Add the OpenAI per-tool extension to the
+  // actual tools/list wire definitions here.
+  const listTools = server.server._requestHandlers.get('tools/list');
+  server.server.setRequestHandler('tools/list', async (...args) => {
+    const result = await listTools(...args);
+    return {
+      ...result,
+      tools: result.tools.map((listedTool) => ({
+        ...listedTool,
+        securitySchemes: server._registeredTools[listedTool.name].securitySchemes,
+      })),
+    };
   });
 
   return server;

@@ -9,9 +9,8 @@ function createServer() {
 
 test('MCP tools advertise a separate, least-privilege scope for account linking', () => {
   const tools = createServer()._registeredTools;
-  assert.deepEqual(tools.get_my_profile._meta.securitySchemes[0].scopes, ['profile:read']);
-  assert.deepEqual(tools.complete_account_link._meta.securitySchemes[0].scopes, ['profile:link']);
-  assert.deepEqual(tools.complete_account_link.scopeChallenge({ authInfo: { scopes: ['profile:read'] } }), { scopes: ['profile:link'] });
+  assert.deepEqual(tools.get_my_profile.securitySchemes[0].scopes, ['profile:read']);
+  assert.deepEqual(tools.complete_account_link.securitySchemes[0].scopes, ['profile:link']);
 });
 
 test('financial MCP commands require both write and finance scopes', () => {
@@ -19,16 +18,11 @@ test('financial MCP commands require both write and finance scopes', () => {
   const ordinaryWrite = { command: 'create-customer', input: {}, idempotencyKey: 'stable-key-01' };
   const invoice = { command: 'issue-invoice', input: {}, idempotencyKey: 'stable-key-02' };
 
-  assert.deepEqual(tools.erp_execute._meta.securitySchemes[0].scopes, ['erp:write']);
+  assert.deepEqual(tools.erp_execute.securitySchemes[0].scopes, ['erp:write']);
   assert.equal(tools.erp_execute.inputSchema.safeParse(ordinaryWrite).success, true);
   assert.equal(tools.erp_execute.inputSchema.safeParse(invoice).success, false);
 
-  assert.deepEqual(tools.erp_execute_finance._meta.securitySchemes[0].scopes, ['erp:write', 'erp:finance']);
+  assert.deepEqual(tools.erp_execute_finance.securitySchemes[0].scopes, ['erp:write', 'erp:finance']);
   assert.equal(tools.erp_execute_finance.inputSchema.safeParse(invoice).success, true);
   assert.equal(tools.erp_execute_finance.inputSchema.safeParse(ordinaryWrite).success, false);
-  assert.deepEqual(
-    tools.erp_execute_finance.scopeChallenge({ authInfo: { scopes: ['erp:write'] } }),
-    { scopes: ['erp:write', 'erp:finance'] },
-  );
-  assert.equal(tools.erp_execute_finance.scopeChallenge({ authInfo: { scopes: ['erp:write', 'erp:finance'] } }), undefined);
 });

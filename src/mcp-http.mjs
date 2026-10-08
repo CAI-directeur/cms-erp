@@ -22,7 +22,8 @@ export function createMcpEndpoint({ auth, content, operations, origin, env = pro
   if (!config) return null;
   const verifier = verifyToken ?? createAuth0AccessTokenVerifier(config);
   const challenge = `Bearer resource_metadata="${new URL(config.resource).origin}/.well-known/oauth-protected-resource/mcp", scope="${scopesSupported.join(' ')}"`;
-  const handler = createMcpHandler((context) => createMcpServer({ auth, content, operations, authInfo: context.authInfo, onError }), {
+  const resourceMetadataUrl = `${new URL(config.resource).origin}/.well-known/oauth-protected-resource/mcp`;
+  const handler = createMcpHandler((context) => createMcpServer({ auth, content, operations, authInfo: context.authInfo, resourceMetadataUrl, onError }), {
     legacy: 'stateless',
     maxRequestBodySize: 1048576,
     onerror: (error) => { try { onError({ code: 'MCP_TRANSPORT_ERROR', name: error?.name ?? 'Error' }); } catch { /* no token or request body is logged */ } },
@@ -46,17 +47,17 @@ export function createMcpEndpoint({ auth, content, operations, origin, env = pro
       }
       if (new URL(req.url, origin).pathname !== '/mcp') return false;
       const token = bearerTokenFromRequest(req);
-      if (!token) {
-        writeJson(res, 401, { error: 'AUTH_REQUIRED' }, { 'WWW-Authenticate': challenge });
-        return true;
-      }
       let authInfo;
-      try { authInfo = await verifier(token); }
-      catch {
-        writeJson(res, 401, { error: 'INVALID_TOKEN' }, { 'WWW-Authenticate': `${challenge}, error="invalid_token"` });
-        return true;
+      if (token) {
+        try { authInfo = await verifier(token); }
+        catch {
+          writeJson(res, 401, { error: 'INVALID_TOKEN' }, { 'WWW-Authenticate': `${challenge}, error="invalid_token"` });
+          return true;
+        }
       }
-      const identityKey = `${authInfo.extra.issuer}\n${authInfo.extra.subject}`;
+      const identityKey = authInfo
+        ? `${authInfo.extra.issuer}\n${authInfo.extra.subject}`
+        : `anonymous\n${req.socket.remoteAddress ?? 'unknown'}`;
       const now = Date.now();
       for (const [key, entry] of rates) if (entry.expiresAt <= now) rates.delete(key);
       if (!rates.has(identityKey) && rates.size >= 10000) {
@@ -70,7 +71,7 @@ export function createMcpEndpoint({ auth, content, operations, origin, env = pro
         writeJson(res, 429, { error: 'RATE_LIMITED' }, { 'Retry-After': String(Math.max(1, Math.ceil((rate.expiresAt - now) / 1000))) });
         return true;
       }
-      req.auth = authInfo;
+      if (authInfo) req.auth = authInfo;
       try { await nodeHandler(req, res); }
       catch {
         if (!res.headersSent) writeJson(res, 500, { error: 'MCP_REQUEST_FAILED' });

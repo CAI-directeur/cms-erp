@@ -58,8 +58,12 @@ organization from a tool argument.
   `cms_submit_review`, `cms_return_for_changes`, `cms_publish`, `cms_archive`
 - `erp_list`, `erp_get`, `erp_execute`, `erp_execute_finance`
 
-Every tool declares OAuth scopes in its MCP metadata. The service layer then
-checks the linked local account's role and, for technicians, record ownership.
+Every tool advertises its OAuth `securitySchemes` at the top level of the
+`tools/list` result. Anonymous discovery is allowed; a tool call without its
+required scopes returns an error result with `_meta["mcp/www_authenticate"]`
+and the protected-resource metadata URL so ChatGPT can start or renew OAuth
+linking. The service layer then checks the linked local account's role and,
+for technicians, record ownership.
 All writes require an idempotency key. CMS publication/archive keeps the CMS
 review and optimistic-version rules. ERP writes continue through the existing
 transactional engine; financial commands also require `erp:finance` and a local
@@ -80,4 +84,8 @@ Site skill.
 This is source implementation only. A public ChatGPT plugin still needs a
 public HTTPS deployment, Auth0 tenant/API/client setup, live authorization and
 tool acceptance, plugin metadata/package, and the required OpenAI review. None
-of those live or publication results is claimed here.
+of those live or publication results is claimed here. OpenAI's tool-level
+OAuth flow specifically relies on per-tool `securitySchemes` plus a tool
+error carrying `_meta["mcp/www_authenticate"]`; the local implementation
+provides both in its wire response, but must still be checked against a live
+ChatGPT connection after deployment.
