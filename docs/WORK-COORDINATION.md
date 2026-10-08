@@ -18,12 +18,12 @@ The SQLite engine and import planner are standalone modules, not a complete CMS/
 
 ## CMS content service
 
-- Owner: this Codex task; source cards and sprint placement in Weft are pending access to the board.
+- Owner: this Codex task; seven CMS cards were read and scheduled in three planned Weft sprints.
 - Branch: `codex/service-operations-integration`.
 - Scope: content types and validation, SQLite drafts and published snapshots, optimistic versions, role checks, idempotent writes, revision/audit history, a host HTTP adapter, and escaped public rendering.
 - Verification: Node.js `v24.19.0`; 23 module tests passed, 0 failed. The module tests cover schema coexistence with service operations. GitHub Actions has not run for this branch.
 - Limits: the module supplies no editor UI, media upload, localization, scheduling, frontend routing, or deployment. Authentication/session resolution, CSRF, tenant boundaries, network-level rate limits, private database location and deployment remain host responsibilities.
-- Weft: the tab is currently at the sign-in page, so its cards and sprint board have not been read or changed.
+- Weft: CMS-ENG-002 and CMS-ENG-001 are planned for 12–16 October 2026; CMS-ENG-003, CMS-ENG-004 and CMS-ENG-008 for 19–23 October; AUD-003, CMS-ENG-007 and conditional CMS-001 for 26–30 October. No card was marked complete. The existing `@site ontwikkelen CAI-Techniek.nl` sprint remains active at 1/7; it was not closed or reshuffled.
 
 ## Existing WordPress domain contract
 
