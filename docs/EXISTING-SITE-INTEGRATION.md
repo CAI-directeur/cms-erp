@@ -10,8 +10,30 @@ new draft does not replace the current public version. The Site also contains
 CRM, properties, catalog, quotes, workorders, planning, execution, integrations,
 reports, customer access, privacy, governance and audit modules.
 
-These facts come from a read-only inspection of the existing browser page. They
-do not prove which Site/ACC deployment or repository is the production source.
+The Site owner task checked the Site and ACC directly through the native Sites
+tools and read the ACC source. The following versions and route behavior are
+observations from that read-only check; this local CMS/ERP repository has not
+been connected or deployed to either project.
+
+## Confirmed Site and API state
+
+- TEST / ACC and production are separate Sites projects with separate databases.
+- TEST / ACC was version 4 from branch `main`, commit
+  `4e48cae2bcbd58890c39c66508db3104bd9b9c4e`. Its deployment succeeded at
+  `https://test.cai-techniek-nl.chatgpt.site`.
+- Production was version 49 from commit
+  `5317bfcd41d06990a245f2d33e52bc6cbf63d124`.
+- The existing CMS screen uses `GET /api/os?view=cms` and `POST /api/os` for
+  internal drafts, owner approval, and records. The separate `/api/editorial`
+  route handles public articles, cases, and pages through draft, review,
+  publish, and restore states.
+- These routes use the existing CAI user session; writes also enforce same-origin
+  checks. No external CMS/ERP service authentication was found.
+- The native Sites tools can inspect Site versions, deployments, and bounded
+  live D1 table data, and can work with the configured source repository. They
+  do not provide an arbitrary REST-call tool or a D1 write query. ACC acceptance
+  therefore needs a source change and an ACC deployment, followed by an
+  authenticated REST check through the app's supported interface.
 
 ## Integration rules
 
@@ -31,17 +53,23 @@ do not prove which Site/ACC deployment or repository is the production source.
   each write. Keep migrations, conflict handling and rollback behavior
   reviewable. No customer or production records should be copied into this
   public repository.
-- Mount the REST API under an approved path or connect through the Site's
-  server-side adapter after confirming the Site source and ACC project. Do not
-  replace existing routes or publish a second Site.
+- Keep the existing `/api/os` and `/api/editorial` behavior intact. A separate
+  versioned ERP adapter (proposed path: `/api/erp/v1`) needs explicit service
+  authentication, least-privilege roles, idempotency, optimistic versions,
+  audit events, and read-back. Do not expose a general bearer token or accept
+  caller-supplied actor/role values.
+- Implement and exercise the adapter in TEST / ACC with synthetic records first.
+  Only after successful REST acceptance and rollback checks should the same
+  change be prepared for production. Do not replace existing routes or publish
+  a second Site.
 
 ## Verification status
 
 - Local Node/SQLite API behavior is covered by the repository test suite.
-- No REST request has been sent to the existing Site or ACC from this build.
-- No Site source has been changed and no Site deployment has been performed.
-- The Sites management connector is not callable in this task. The existing
-  browser page is available for read-only inspection, but that does not provide
-  deploy or environment-write access.
-- The existing Site's source repository, accepted API contract and ACC
-  deployment target still need confirmation from its current builder.
+- No REST request from this CMS/ERP build has been sent to the Site or ACC.
+- No Site source has been changed by this repository, and no CMS/ERP version
+  has been deployed. The observed ACC v4 deployment predates this integration.
+- The native Sites connector was usable in the Site owner task for source and
+  version inspection; the current CMS/ERP task cannot call those tools directly.
+- The proposed `/api/erp/v1` contract and service-auth mechanism still need to be
+  implemented in the Site source and validated in ACC before production work.
