@@ -1,10 +1,10 @@
 # ChatGPT plugin preparation (draft; not submission-ready)
 
-This document prepares a future public ChatGPT app listing from the current
-local implementation. It is not a plugin package, a public server, or evidence
-of a successful ChatGPT connection. The local MCP endpoint has no public HTTPS
-deployment, live OAuth configuration, or live ChatGPT acceptance yet. Do not
-invent an endpoint or package an MCP manifest that points to a placeholder.
+This is a public integration specification and synthetic review-case template
+for the standalone source snapshot. It is not a submitted package, deployment
+record or evidence of a successful ChatGPT connection. Configure and accept an
+actual HTTPS MCP endpoint and OAuth client before preparing submission metadata;
+never use a placeholder endpoint as a production capability.
 
 ## Supported behavior in the local source
 
@@ -20,15 +20,19 @@ invent an endpoint or package an MCP manifest that points to a placeholder.
 - Link an Auth0 identity to a local account using a one-time admin-created
   challenge. No account is matched by email and no role is taken from a token.
 
-This implementation currently targets one Auth0 organization and one local
-database per installation. It is not a shared multi-tenant service. It has no
-live WordPress/WooCommerce connection, external email delivery, payment
-collection/refund, media upload, or public ChatGPT endpoint.
+The source contract targets one Auth0 organization and one local database per
+installation; it is not a shared multi-tenant service. The import planner performs
+no network fetch. ERP payment entries record confirmed payments and do not
+collect or refund money. Actual provider delivery, media integration and a public
+endpoint require their own accepted deployment; this specification proves none
+of those live capabilities.
 
 ## Review-case drafts
 
 These cases describe the local source contract and use synthetic setup only.
-All are **Not run against ChatGPT**. Before public review, provide a stable
+These templates are **Not run against ChatGPT** in this source-publication
+receipt; local tests or a package draft cannot substitute for live case results.
+Before public review, provide a stable
 review deployment, a dedicated test tenant/database, test identities with the
 listed scopes and roles, and then execute each case against the exact submitted
 server version.
@@ -36,7 +40,7 @@ server version.
 ### Positive cases
 
 1. **Read managed content**
-   - Setup: link a reader/publisher test identity with `cms:read`; seed one
+   - Setup: link a publisher/admin test identity with `cms:read`; seed one
      synthetic draft and one synthetic published item owned by the test tenant.
    - Prompt: “Welke CMS-pagina's kan ik beheren? Toon de titel en status van de
      eerste vijf.”
@@ -120,7 +124,10 @@ server version.
    - Expected: no tool call. Refuse to expose private customer/financial data
      publicly and offer a redacted, consent-appropriate alternative.
 
-## Listing and publication facts still missing
+## Required submission evidence
+
+Verify these requirements against the actual submission candidate; this template
+contains no account, listing, upload or external review receipt.
 
 - Verified developer identity and selected publisher account.
 - Confirmed target category and supported countries.
@@ -135,7 +142,7 @@ server version.
 - Review cases above run against the saved candidate version, with results and
   evidence recorded.
 
-Do not label a ZIP as ready for submission until these facts, artifacts, public
-endpoint, and applicable review checks have been verified. See
+Keep the draft/not-submission-ready label until the exact package, metadata,
+endpoint and applicable live review checks are verified. See
 [`MCP-AUTH0.md`](MCP-AUTH0.md) for the server configuration boundary and the
 plugin creator skill's submission checklist for the public listing workflow.

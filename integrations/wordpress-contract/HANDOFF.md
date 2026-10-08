@@ -1,13 +1,11 @@
-# WordPress-contractoverdracht naar de Node/SQLite-bouwer
+# Draagbaar WordPress/Node-domeincontract
 
-Datum: 2026-10-07. Enige bestemming: https://github.com/revers101/cms-erp.
-
-Deze map bevat uitsluitend overdraagbare domeinlogica en tests. Geen WordPress-distributie, database, echte klanten, instellingen of geheimen. De actieve Node/SQLite-bouwer blijft eigenaar van de app, database, autorisatie, migraties en publicatie. Geen bestanden buiten deze nieuwe map vervangen.
+Deze map bevat uitsluitend overdraagbare domeinlogica en synthetische tests. Geen WordPress-distributie, database, klanten, runtime-instellingen of geheimen. De hostapplicatie moet zelf opslag, autorisatie, migraties en publicatie leveren.
 
 ## Referentiekandidaat
 
 Bevroren ZIP: cai-cms-erp-wordpress-handoff-2026-10-07.zip. SHA-256: 5e100ef21b7b04d557e7288d27f757dfc4259a498b694b5d76678cadece2f748.
-PHP8.3/SQLite-bewijs van 2026-10-07T20:48:00.845Z:23 CMS/WooCommerce- en36 ERP-controles geslaagd. Geen Docker/MariaDB, volledige browsercheckout, echte betaling of live Sites-koppeling bewezen. Latere UI/Codespaces-wijzigingen niet volledig opnieuw geïntegreerd getest. Deze referentiebewijzen zijn geen Node-appacceptatie.
+Dit is herkomstcontext van een referentiepakket; het is geen acceptatiebewijs voor de Node-applicatie, een webshopcheckout, echte betaling of live website-integratie.
 
 ## Overdraagbare functies
 
@@ -34,15 +32,15 @@ node --test integrations/wordpress-contract/domain.test.mjs
 
 Explicit null/zero optional references worden hier streng geweigerd: een HARDENING ten opzichte van de bevroren PHP-kandidaat, geen claim dat die kandidaat al gefixt is. PHP sanitize_text_field is niet nagebouwd; tekst die later in HTML wordt geplaatst moet door de app correct worden escaped/gesanitiseerd. Geldfunctie staat lege materialen toe; offertevalidatie moet minimaal één regel afdwingen.
 
-## Risico's die bij Node-integratie moeten worden opgelost
+## Hostintegratievereisten
 
 1. Genormaliseerde tabellen met foreign keys, transaksiemutatie plus audit samen, optimistic UPDATE WHERE version, DB-unieke idempotentiesleutel en canonieke payloadhash.
 2. Autorisatie per record/klant/tenant, geen publieke klant/exportroutes; secrets alleen server-side. Gegevens niet automatisch tussen WP en Node synchroniseren.
 3. Woo-order bestaat is onvoldoende: controleer klantbinding, ordertype en gewenste unieke werkbon/orderrelatie.
 4. Register is geen wettelijke boekhouding of Moneybird-import. sent/accepted statussen bewijzen geen mailbezorging/klantondertekening.
 5. Sites adapter alleen publieke published content; returned HTML is niet gesanitiseerd, DNS-rebinding niet volledig afgevangen.
-6. Codespaces-poortprivacy en productie-HTTPS zijn nog niet echt gevalideerd. Geen DEV met demologin openbaar aanbieden. Geen automatisch deployment of wijziging van securityinstellingen door deze map.
+6. Valideer de uiteindelijke hostingconfiguratie, HTTPS en toegangsgrenzen afzonderlijk. Bied geen ontwikkelomgeving met demologin openbaar aan. Dit pakket wijzigt geen deployment of securityinstellingen.
 
 ## Integratiegrens
 
-Neem rekenregels/statuscontracten/tests over in de bestaande Node-kern, liefst via adapter en extra app-tests. Laat één systeem eigenaar zijn van ieder bedrijfsobject. WordPress-hooks/nonces/PHP UI niet overzetten als Node-functionaliteit. GPL-3.0-or-later geldt voor deze eigen code; behoud SPDX en LICENSE en beoordeel compatibiliteit met de doelapp.
+Neem rekenregels/statuscontracten/tests over via een expliciete adapter en hosttests. Laat één systeem eigenaar zijn van ieder bedrijfsobject. WordPress-hooks/nonces/PHP UI zijn geen Node-functionaliteit. De portable bron declareert GPL-3.0-or-later; behoud SPDX, LICENSE en NOTICE.md. Zie docs/LICENSE-PROVENANCE.md in de repository voor de geverifieerde herkomst en resterende rechtenbeoordeling.

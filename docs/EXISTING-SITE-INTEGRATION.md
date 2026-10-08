@@ -1,159 +1,51 @@
-# Existing CAI Business OS Site integration
-> Publication snapshot, 9 October 2026: the internal website board is the only active project source. Weft is historical/recovery input; live Weft reads, Done writes and dual-run are not release prerequisites. Dated observations below describe their original checkpoint and do not prove current deployments. Source publication is separate from DEV, independent TEST/ACC and same-artifact PROD acceptance. The current approved delivery protocol is published in PR #2.
+# Existing website integration contract
 
+This document is public architecture guidance for connecting the standalone
+Node/SQLite application to an existing website. It is not a Site source audit,
+a runtime configuration record or deployment/acceptance evidence.
 
-## Observed target
+## Host boundary
 
-The existing CAI Business OS Site is reachable at `https://www.cai-techniek.nl`.
-Its current CMS page is `/app/cms`. The existing interface contains knowledge
-articles, cases, DNA product presentations, homepage content and service pages.
-Its stated publishing workflow is concept, owner review, then publication; a
-new draft does not replace the current public version. The Site also contains
-CRM, properties, catalog, quotes, workorders, planning, execution, integrations,
-reports, customer access, privacy, governance and audit modules.
+The existing website remains the owner of its homepage, customer login, CMS
+routes and data. Do not replace its origin, authentication or published content
+with the standalone host. The Node host is a separate application and needs an
+explicit integration architecture before website use.
 
-Work checked Site metadata and source for DEV v11, production v49 and later
-ACC v4 through the Sites source workflow. It deployed a DEV-only customer-auth
-origin fix as DEV v12. The detailed route and authentication observations below
-combine those dated source reads. A later DEV v13 deployment added version guards
-and streamed request limits; current Site state must still be reread before any
-change. This local CMS/ERP repository has not been connected or deployed.
+The standalone services use synchronous `node:sqlite` and SQLite transactions.
+A Worker/D1 deployment requires an implementation that preserves the domain,
+transaction, audit and idempotency guarantees on its own asynchronous storage
+interface, or a separately hosted Node service with an authenticated bridge.
+The Node modules cannot be imported as a drop-in Worker persistence layer.
 
-## Confirmed Site and API state
+## Adapter contract
 
-- TEST / ACC and production are separate Sites projects with separate databases.
-- TEST / ACC was read back as version 4 from branch `main`, commit
-  `4e48cae2bcbd58890c39c66508db3104bd9b9c4e`. Deployment
-  `appgdep_6abe9f190bb08191a43bc8be0f563d5a` succeeded at
-  `https://test.cai-techniek-nl.chatgpt.site`. This is the 8 October 2026
-  readback, not a claim about a later current version.
-- Production was version 49 from commit
-  `5317bfcd41d06990a245f2d33e52bc6cbf63d124`.
-- Work later deployed DEV v12 at commit
-  `44b4d4dc41c744b7bdf6409e89d7bfec08e91d60`; its deployment succeeded. The
-  change makes customer-auth callbacks use the DEV origin when
-  `CUSTOMER_AUTH_ORIGIN` is configured. ACC and production were not modified.
-- Work later deployed DEV v13 at commit
-  `9c39779d1114912783f141619336168924db45ac`; deployment
-  `appgdep_6ac79ba43180819186e6bacb2a4b719c` succeeded. It added CMS/editorial
-  version guards, streamed request limits, and a DEV-only customer-auth origin
-  default. Work reports 9/9 targeted tests and build checks passed. The live
-  access gateway returned 403 for anonymous `/app/cms`, `/api/os`, and
-  `/api/editorial`; `/portaal` had a connection error, so authenticated writes
-  and customer login remain unverified. ACC v4 and production v49 were unchanged.
-- Work read back all ten customer-auth configuration fields in DEV runtime
-  revision 3 and `.env.example`: Resend, Google, Apple, and `AUTH_EMAIL_MODE`.
-  Secret flags are set on `RESEND_API_KEY`, `GOOGLE_CLIENT_SECRET`, and
-  `APPLE_PRIVATE_KEY`. Credential values were not read; no provider is claimed
-  live or tested, and no deployment was needed for this field check.
-- DEV v11 and production v49 have divergent Git histories, but the inspected
-  login, portal, CMS and API files have matching contents. A separate
-  read-only audit later retrieved ACC v4 source and confirmed it matched the
-  saved ACC commit.
-- The existing CMS screen uses `GET /api/os?view=cms` and `POST /api/os` for
-  internal drafts, owner approval, and records. The separate `/api/editorial`
-  route handles public articles, cases, and pages through draft, review,
-  publish, and restore states.
-- These routes use the existing CAI user session; writes also enforce same-origin
-  checks. No external CMS/ERP service authentication was found.
-- The native Sites tools can inspect Site versions, deployments, and bounded
-  live D1 table data, and can work with the configured source repository. They
-  do not provide an arbitrary REST-call tool or a D1 write query. ACC acceptance
-  therefore needs a source change and an ACC deployment, followed by an
-  authenticated REST check through the app's supported interface.
+- Reuse the website's verified server-side session identity. Never take actor,
+  tenant or role authority from request JSON, an email or a caller-supplied header.
+- Preserve the existing `/app/cms`, `/api/os` and `/api/editorial` contracts where
+  those routes are used. Add an explicitly versioned adapter instead of silently
+  changing an existing route's behavior.
+- Apply least-privilege role and record/tenant checks for each operation. OAuth
+  scope is an additional condition and does not replace local authorization.
+- Require exact configured origin and session-bound CSRF on browser mutations.
+  Use bounded streaming input validation and generic errors without credentials.
+- Make source-to-target IDs explicit. Use supplied optimistic versions, durable
+  actor-scoped idempotency keys and payload fingerprints. Preserve atomic
+  mutation/audit/replay or document and test the chosen storage guarantees.
+- Map content schemas explicitly. Only published public projections may enter
+  the public renderer; keep drafts, personal records and internal audit data out.
+- Preserve the review/publisher approval stage and current published snapshot.
+  An edit is not authorization to publish.
+- Keep runtime credentials, configuration and actual user data outside public
+  source. Example values do not constitute provider setup or live acceptance.
 
-## ACC v4 read-only adapter audit (8 October 2026)
+## Acceptance and operation
 
-Work confirmed the ACC source at commit
-`4e48cae2bcbd58890c39c66508db3104bd9b9c4e` and found that a new
-`app/api/erp/v1/[...path]/route.ts` can be mounted while retaining
-`worker/index.ts`, `/app/cms`, `/api/os`, `/api/editorial`, current auth and D1
-tables. No `/api/erp/v1` route or CMS/ERP adapter exists yet. This was a
-source-only audit: no tests, code changes, writes, deployment or board update
-were made.
+Pin source/artifact and environment before building the adapter. Test synthetic
+main workflows, allow/deny, retries, concurrent versions, persistence and rollback
+in DEV and independently in TEST/ACC. Promote the accepted artifact to PROD,
+then read back the actual version and affected behavior. Record project progress
+on the primary website board with environment and release state separately.
 
-| Area | ACC source evidence | Adapter work still required |
-| --- | --- | --- |
-| Identity and roles | `getChatGPTUser()`, `principal()`, `roleMatrix`, `broad()` and `visible()` exist | Reuse verified Site identity and map each action/object explicitly; never accept actor or role from request data |
-| Origin and CSRF | `sameOrigin()` checks the exact Origin; OAuth state/nonce protects the login flow | Add an independent CSRF token check for state-changing ERP requests |
-| Idempotency | Weft import receipts exist for that import path | General actor-scoped idempotency key, request fingerprint, replay result and conflict handling are absent from the audited OS/editorial paths |
-| Concurrency | OS update has a version predicate; editorial checks versions | CMS save has no supplied-version check; editorial draft upsert is unconditional after its precheck. Use atomic conditional writes |
-| Audit | `os_audit`, correlation IDs, policy version and `maskAudit()` exist | Populate actual actor role and request ID; do not suppress audit failure; make mutation, audit and idempotency recording atomic |
-| Storage/runtime | Cloudflare Worker uses D1 `DB`, R2 `FILES` and Drizzle-D1 | Preserve existing tables and map service records to D1 |
-| Execution model | Both local engines import `DatabaseSync` from `node:sqlite`, call synchronous `.prepare().get/run()` and use SQLite transactions such as `BEGIN IMMEDIATE` | They cannot be imported directly into the Cloudflare Worker as written. Either port the domain/persistence path to asynchronous D1 operations while preserving transactional guarantees, or deploy a separate Node service and define an authenticated Site bridge. No transport/hosting choice is implemented or verified |
-| Request limits | Worker headers, Content-Length limit and in-memory 120/minute/IP limiter exist | Enforce a streamed body limit in the route; the in-memory limiter is not global |
-
-The audit found that `lib/customer-auth.ts` fell back to a DEV `AUTH_ORIGIN`;
-DEV v13 later fixed its own default. ACC runtime override was not read, so the
-ACC callback origin remains unverified. The v13 report confirms version guards
-and streamed body limits, but says session-bound CSRF, durable actor-scoped
-idempotency, and atomic audit/replay are still incomplete. Work inspected
-`app/api/os/route.ts`, `app/api/os/file/route.ts`,
-`app/api/editorial/route.ts`, `lib/os.ts`, `lib/server.ts`,
-`lib/customer-auth.ts`, `lib/editorial.ts`, `app/chatgpt-auth.ts`, auth routes,
-`db/schema.ts`, `db/index.ts`, `worker/index.ts`, hosting configuration and
-relevant tests. The test suite was inspected but not run.
-
-The local branch commit is not available in Work's cloud checkout: the exact
-local feature commit is absent from GitHub, and no shared source artifact has
-been confirmed. Until a shared commit/artifact is readable by both environments,
-Work must not recreate the standalone ERP engine in the Site. The coordinator
-can provide concise route contracts inline or establish a verified public
-source handoff when one is available.
-
-## Integration rules
-
-- Preserve the existing homepage, `/app/cms`, authentication and published
-  content. The standalone host in this repository serves `/` itself and cannot
-  be deployed over the existing origin as-is.
-- Keep the Site's existing session identity as the source of authorization.
-  Do not trust a client-supplied actor ID, role header or email when connecting
-  the Node modules.
-- Keep the existing owner-review stage and published snapshot. The local Node
-  CMS now models submit-for-review, return-for-changes and publisher approval;
-  a Site adapter must still map the Site's verified owner role and revision
-  fields before connecting its write commands.
-- Map existing Site content types to the Node schema explicitly. The Node CMS
-  supports page, article, service, project and FAQ using closed content blocks;
-  it does not import arbitrary HTML or silently overwrite existing content.
-- Use stable external content IDs, optimistic versions and idempotency keys for
-  each write. Keep migrations, conflict handling and rollback behavior
-  reviewable. No customer or production records should be copied into this
-  public repository.
-- Keep the existing `/api/os` and `/api/editorial` behavior intact. A separate
-  versioned ERP adapter (proposed path: `/api/erp/v1`) needs explicit service
-  authentication, least-privilege roles, idempotency, optimistic versions,
-  audit events, and read-back. Do not expose a general bearer token or accept
-  caller-supplied actor/role values.
-- Implement and exercise the adapter in TEST / ACC with synthetic records first.
-  Only after successful REST acceptance and rollback checks should the same
-  change be prepared for production. Do not replace existing routes or publish
-  a second Site.
-- Use `https://www.cai-techniek.nl/app/board` for all project work. Record work
-  status, execution environment, source artifact and release state separately.
-  Local and ACC evidence can update progress; PROD delivery requires actual
-  deployment and live version/behavior read-back.
-
-## Verification status
-
-- Local Node/SQLite API behavior is covered by the repository test suite.
-- No REST request from this CMS/ERP build has been sent to the Site or ACC.
-- No Site source has been changed by this repository, and no CMS/ERP version
-  has been deployed. The observed ACC v4 deployment predates this integration.
-- The native Sites connector was usable in the Site owner task for source and
-  version inspection; the current CMS/ERP task cannot call those tools directly.
-- The `/api/erp/v1` adapter, runtime architecture decision, D1 mapping or
-  external Node-service bridge, service-auth boundary and security controls
-  still need implementation and authenticated synthetic-data REST acceptance
-  in ACC before production work. Do not import the synchronous `node:sqlite`
-  engines directly into the Site Worker.
-- The local operations HTTP adapter now awaits service results and therefore
-  supports both synchronous and promise-returning implementations. This creates
-  a compatibility seam for an async D1 service, but the actual operations and
-  CMS engines still use synchronous `DatabaseSync`; no D1 service or Site bridge
-  has been implemented.
-- DEV v13 hardening is not a completed ERP integration: session-bound CSRF,
-  durable actor/key/fingerprint replay, atomic mutation/audit/replay, the
-  shared Node-to-Worker contract, and authenticated REST acceptance remain
-  open. A follow-up DEV task is assigned to Work; its result must be read back
-  before treating the safeguards as complete.
+Host deployment must separately validate trusted proxy identity and shared
+rate-limiting behavior, secure cookies, monitoring, restore and availability.
+This guide supplies no proxy-header policy or live hosting acceptance.

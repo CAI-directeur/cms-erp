@@ -52,7 +52,7 @@ const handleContent = createContentHandler({
   service,
   resolveActor: (request) => authenticatedSessionActor(request),
   verifyCsrf: (request, actor) => hostCsrfCheck(request, actor),
-  allowedOrigin: 'https://cms.example.nl',
+  allowedOrigin: 'https://cms.example.com', // reserved example; set the exact host origin
 });
 ```
 

@@ -10,17 +10,30 @@ Publication branch: `codex/application-snapshot-003` in the permitted public for
 
 The source export contains 66 tracked files. The
 [manifest](APPLICATION-SNAPSHOT-MANIFEST.json) lists every original path, its
-SHA-256 and its publication hash. The runtime, tests, SQL schemas, package.json
-and lockfile are byte-for-byte unchanged from that committed source. No existing
+source Git blob OID/SHA-256, original archive hash and publication blob OID/hash.
+The Windows export converted text line endings to CRLF; source and publication
+Git objects retain LF. All 57 unchanged paths, including runtime, tests, SQL
+schemas, package.json and lockfile, preserve exact source Git blob identities.
+The nine changed/excluded original paths are documentation, license context and
+CI. No existing
 dirty/untracked Secret Manager, Payload POC, plugin, screenshot or worker report
 is included. The separate unpublished commit history is not imported.
 
-Four original files receive publication-specific changes: README documents the
-snapshot and locked install/direct Node start; the two dated coordination/Site
-integration documents make the primary website-board policy explicit; CI installs
-locked dependencies and runs the complete tests on Windows and Ubuntu with pinned
-action revisions. This receipt and the manifest are the only added review records.
-The existing license files and notices are preserved unchanged.
+Publication-specific changes are explicit in the manifest. README describes the
+snapshot and locked install/direct Node start. CI installs locked dependencies
+and runs the complete tests on Windows and Ubuntu with pinned action revisions.
+The internal coordination record is excluded from the current source artifact;
+the Site integration and contract handoff expose public architecture/contracts
+without internal ownership or operational status records. The plugin preparation
+retains its draft/not-submission-ready label and corrects a review-case role.
+The CMS origin example uses reserved example.com. Integration LICENSE files now
+use the unchanged root GPL text; their complete original reference preambles
+remain in contextual NOTICE.md files. A license-provenance note is added with
+the source trace and its limits. No runtime or test behavior is changed.
+
+This amendment changes the current PR tree and net diff. Earlier non-secret
+documentation remains visible in development commit history; it is not a
+history-redaction claim. The artifact must receive independent review again.
 
 Board relation: `cai-source-merge` is the coordinator's candidate mapping; the
 Board Steward must confirm the actual primary-board card relation. This document
@@ -50,19 +63,21 @@ node --test --test-concurrency=1 test/*.test.mjs integrations/wordpress-contract
 
 - Frozen dependency install: exit 0; seven resolved packages, no lifecycle scripts.
 - Full declared repository suite: exit 0; 132 tests, 132 pass, 0 fail, 0 cancelled,
-  0 skipped, 0 todo; duration 61,502.2783 ms. Tests use synthetic data and local
+  0 skipped, 0 todo; amendment rerun duration 51,198.2396 ms. Tests use synthetic data and local
   HTTP/SQLite resources; no actual Site or provider login/email is accepted.
 - Syntax: `node --check` succeeded for all 35 JavaScript/ES-module source/test
   files in the snapshot.
 - Build: there is no bundler/build script in this Node ES-module application;
   parsing and the declared runtime test suite are the relevant local checks.
-- CI: configured for the exact source and frozen dependencies on Windows/Ubuntu;
-  remote execution status must be read back after push. A local pass is not CI.
+- CI: the prior development head `12298aca` passed 132/132 on both Windows and
+  Ubuntu in fork run 37859207412. That is historical evidence. New-head remote
+  execution must be read back after the amendment push; a local pass is not CI.
 
 ## Publication review and limitations
 
 Root and module/contract/import sources declare GPL-3.0-or-later. Existing
-WordPress/WooCommerce copyright and GPL notices are retained. Installed direct
+reference WordPress/WooCommerce copyright notices are preserved in context;
+see [license provenance and limits](LICENSE-PROVENANCE.md). Installed direct
 and transitive dependency manifests declare MIT or Apache-2.0; dependency code is
 not vendored into this snapshot. This review does not replace a future release's
 complete third-party notice/dependency review.
