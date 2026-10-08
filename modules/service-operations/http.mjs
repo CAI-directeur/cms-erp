@@ -88,9 +88,9 @@ export function createOperationsHandler({service,resolveActor,verifyCsrf,authori
       const parts=url.pathname.slice(prefix.length).split('/').filter(Boolean);
       if (req.method==='GET') {
         const options=listOptions(url.searchParams);
-        if (parts.length===1 && parts[0]==='bookkeeping') reply(res,200,{data:service.exportBookkeeping(actor,options)},requestId);
-        else if (entities.has(parts[0]) && parts.length===1) reply(res,200,{data:service.list(actor,parts[0],options)},requestId);
-        else if (entities.has(parts[0]) && parts[0]!=='reservations' && parts.length===2 && /^[1-9]\d*$/.test(parts[1]) && !url.search) reply(res,200,{data:service.get(actor,parts[0],integer(Number(parts[1])))},requestId);
+        if (parts.length===1 && parts[0]==='bookkeeping') reply(res,200,{data:await service.exportBookkeeping(actor,options)},requestId);
+        else if (entities.has(parts[0]) && parts.length===1) reply(res,200,{data:await service.list(actor,parts[0],options)},requestId);
+        else if (entities.has(parts[0]) && parts[0]!=='reservations' && parts.length===2 && /^[1-9]\d*$/.test(parts[1]) && !url.search) reply(res,200,{data:await service.get(actor,parts[0],integer(Number(parts[1])))},requestId);
         else throw new HttpError(404,'ROUTE_NOT_FOUND');
         return true;
       }
@@ -103,10 +103,10 @@ export function createOperationsHandler({service,resolveActor,verifyCsrf,authori
       if (await authorizeCommand({req,actor,command:parts[1],input})!==true) throw new HttpError(403,'COMMAND_NOT_AUTHORIZED');
       const [method,kind]=commands[parts[1]];
       let result;
-      if (kind==='status') {shape(input,['id','status','version']);result=service[method](actor,integer(input.id),input.status,integer(input.version),key);}
-      else if (kind==='from-quote') {shape(input,['quoteId','schedule']);result=service[method](actor,integer(input.quoteId),input.schedule,key);}
-      else if (kind==='schedule') {shape(input,['id','schedule','version']);result=service[method](actor,integer(input.id),input.schedule,integer(input.version),key);}
-      else result=service[method](actor,input,key);
+      if (kind==='status') {shape(input,['id','status','version']);result=await service[method](actor,integer(input.id),input.status,integer(input.version),key);}
+      else if (kind==='from-quote') {shape(input,['quoteId','schedule']);result=await service[method](actor,integer(input.quoteId),input.schedule,key);}
+      else if (kind==='schedule') {shape(input,['id','schedule','version']);result=await service[method](actor,integer(input.id),input.schedule,integer(input.version),key);}
+      else result=await service[method](actor,input,key);
       reply(res,200,{data:result},requestId);
       return true;
     } catch (error) {

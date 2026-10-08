@@ -39,6 +39,21 @@ test('writes require boolean CSRF success, not truthy value',async()=>{
 test('valid command passes body and stable idempotency key',async()=>{
   const f=fixture();const r=await f.request('POST','/api/operations/commands/create-customer',{name:'Demo'});assert.equal(r.status,200);assert.deepEqual(f.calls[0],['createCustomer',{id:7,role:'admin'},{name:'Demo'},'test-key-123']);assert.equal(r.headers['Cache-Control'],'no-store');assert.equal(r.headers['X-Content-Type-Options'],'nosniff');
 });
+test('handler awaits asynchronous service methods for future D1-backed adapters',async()=>{
+  const calls=[];
+  const service={
+    async list(...args){calls.push(['list',...args]);return [{id:9}];},
+    async get(...args){calls.push(['get',...args]);return {id:args[2]};},
+    async exportBookkeeping(...args){calls.push(['exportBookkeeping',...args]);return [{id:10}];},
+    async createCustomer(...args){calls.push(['createCustomer',...args]);return {id:11};},
+  };
+  const f=fixture({service});
+  assert.deepEqual((await f.request('GET','/api/operations/customers')).body,{data:[{id:9}]});
+  assert.deepEqual((await f.request('GET','/api/operations/customers/9')).body,{data:{id:9}});
+  assert.deepEqual((await f.request('GET','/api/operations/bookkeeping')).body,{data:[{id:10}]});
+  assert.deepEqual((await f.request('POST','/api/operations/commands/create-customer',{name:'Async'})).body,{data:{id:11}});
+  assert.deepEqual(calls.map(([name])=>name),['list','get','exportBookkeeping','createCustomer']);
+});
 test('missing and malformed idempotency keys rejected before service',async()=>{
   for (const key of [undefined,'short','secret key',Array(2).fill('header')]) {const f=fixture();assert.equal((await f.request('POST','/api/operations/commands/create-customer',{}, {'idempotency-key':key})).status,400);assert.equal(f.calls.length,0);}
 });

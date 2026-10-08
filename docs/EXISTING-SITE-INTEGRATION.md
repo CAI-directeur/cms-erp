@@ -13,7 +13,8 @@ reports, customer access, privacy, governance and audit modules.
 Work checked Site metadata and source for DEV v11, production v49 and later
 ACC v4 through the Sites source workflow. It deployed a DEV-only customer-auth
 origin fix as DEV v12. The detailed route and authentication observations below
-combine those dated source reads; current Site state must be reread before any
+combine those dated source reads. A later DEV v13 deployment added version guards
+and streamed request limits; current Site state must still be reread before any
 change. This local CMS/ERP repository has not been connected or deployed.
 
 ## Confirmed Site and API state
@@ -30,6 +31,19 @@ change. This local CMS/ERP repository has not been connected or deployed.
   `44b4d4dc41c744b7bdf6409e89d7bfec08e91d60`; its deployment succeeded. The
   change makes customer-auth callbacks use the DEV origin when
   `CUSTOMER_AUTH_ORIGIN` is configured. ACC and production were not modified.
+- Work later deployed DEV v13 at commit
+  `9c39779d1114912783f141619336168924db45ac`; deployment
+  `appgdep_6ac79ba43180819186e6bacb2a4b719c` succeeded. It added CMS/editorial
+  version guards, streamed request limits, and a DEV-only customer-auth origin
+  default. Work reports 9/9 targeted tests and build checks passed. The live
+  access gateway returned 403 for anonymous `/app/cms`, `/api/os`, and
+  `/api/editorial`; `/portaal` had a connection error, so authenticated writes
+  and customer login remain unverified. ACC v4 and production v49 were unchanged.
+- Work read back all ten customer-auth configuration fields in DEV runtime
+  revision 3 and `.env.example`: Resend, Google, Apple, and `AUTH_EMAIL_MODE`.
+  Secret flags are set on `RESEND_API_KEY`, `GOOGLE_CLIENT_SECRET`, and
+  `APPLE_PRIVATE_KEY`. Credential values were not read; no provider is claimed
+  live or tested, and no deployment was needed for this field check.
 - DEV v11 and production v49 have divergent Git histories, but the inspected
   login, portal, CMS and API files have matching contents. A separate
   read-only audit later retrieved ACC v4 source and confirmed it matched the
@@ -67,9 +81,12 @@ were made.
 | Execution model | Both local engines import `DatabaseSync` from `node:sqlite`, call synchronous `.prepare().get/run()` and use SQLite transactions such as `BEGIN IMMEDIATE` | They cannot be imported directly into the Cloudflare Worker as written. Either port the domain/persistence path to asynchronous D1 operations while preserving transactional guarantees, or deploy a separate Node service and define an authenticated Site bridge. No transport/hosting choice is implemented or verified |
 | Request limits | Worker headers, Content-Length limit and in-memory 120/minute/IP limiter exist | Enforce a streamed body limit in the route; the in-memory limiter is not global |
 
-The audit also found that `lib/customer-auth.ts` falls back to a DEV
-`AUTH_ORIGIN`; ACC runtime override was not read, so the ACC callback origin is
-unverified. Work inspected `app/api/os/route.ts`, `app/api/os/file/route.ts`,
+The audit found that `lib/customer-auth.ts` fell back to a DEV `AUTH_ORIGIN`;
+DEV v13 later fixed its own default. ACC runtime override was not read, so the
+ACC callback origin remains unverified. The v13 report confirms version guards
+and streamed body limits, but says session-bound CSRF, durable actor-scoped
+idempotency, and atomic audit/replay are still incomplete. Work inspected
+`app/api/os/route.ts`, `app/api/os/file/route.ts`,
 `app/api/editorial/route.ts`, `lib/os.ts`, `lib/server.ts`,
 `lib/customer-auth.ts`, `lib/editorial.ts`, `app/chatgpt-auth.ts`, auth routes,
 `db/schema.ts`, `db/index.ts`, `worker/index.ts`, hosting configuration and
@@ -128,3 +145,13 @@ source handoff when one is available.
   still need implementation and authenticated synthetic-data REST acceptance
   in ACC before production work. Do not import the synchronous `node:sqlite`
   engines directly into the Site Worker.
+- The local operations HTTP adapter now awaits service results and therefore
+  supports both synchronous and promise-returning implementations. This creates
+  a compatibility seam for an async D1 service, but the actual operations and
+  CMS engines still use synchronous `DatabaseSync`; no D1 service or Site bridge
+  has been implemented.
+- DEV v13 hardening is not a completed ERP integration: session-bound CSRF,
+  durable actor/key/fingerprint replay, atomic mutation/audit/replay, the
+  shared Node-to-Worker contract, and authenticated REST acceptance remain
+  open. A follow-up DEV task is assigned to Work; its result must be read back
+  before treating the safeguards as complete.

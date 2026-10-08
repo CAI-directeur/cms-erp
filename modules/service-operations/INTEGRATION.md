@@ -1,6 +1,6 @@
 # Integratie in de bestaande kern
 
-Dit onderdeel levert een operations-service en een HTTP-handler. Het start geen server en bevat geen eigen gebruikers- of CMS-systeem. De appbouwer sluit het aan op bestaande sessies, routes en UI. Gebruik Node 24; voer de tests uit met de concrete runtime die je uitrolt.
+Dit onderdeel levert een operations-service en een HTTP-handler. Het start geen server en bevat geen eigen gebruikers- of CMS-systeem. De appbouwer sluit het aan op bestaande sessies, routes en UI. De handler wacht op servicecalls, zodat de host zowel directe resultaten als promises kan afhandelen. De meegeleverde `OperationsService` gebruikt nog steeds synchrone Node 24 `node:sqlite`; er is nog geen D1-implementatie. Voer de tests uit met de concrete runtime die je uitrolt.
 
 ## Identiteit, rollen en database
 
