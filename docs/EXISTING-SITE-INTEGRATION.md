@@ -63,7 +63,8 @@ were made.
 | Idempotency | Weft import receipts exist for that import path | General actor-scoped idempotency key, request fingerprint, replay result and conflict handling are absent from the audited OS/editorial paths |
 | Concurrency | OS update has a version predicate; editorial checks versions | CMS save has no supplied-version check; editorial draft upsert is unconditional after its precheck. Use atomic conditional writes |
 | Audit | `os_audit`, correlation IDs, policy version and `maskAudit()` exist | Populate actual actor role and request ID; do not suppress audit failure; make mutation, audit and idempotency recording atomic |
-| Storage/runtime | Cloudflare Worker uses D1 `DB`, R2 `FILES` and Drizzle-D1 | Map the local service contract to D1; preserve existing tables; do not deploy the Node/SQLite host |
+| Storage/runtime | Cloudflare Worker uses D1 `DB`, R2 `FILES` and Drizzle-D1 | Preserve existing tables and map service records to D1 |
+| Execution model | Both local engines import `DatabaseSync` from `node:sqlite`, call synchronous `.prepare().get/run()` and use SQLite transactions such as `BEGIN IMMEDIATE` | They cannot be imported directly into the Cloudflare Worker as written. Either port the domain/persistence path to asynchronous D1 operations while preserving transactional guarantees, or deploy a separate Node service and define an authenticated Site bridge. No transport/hosting choice is implemented or verified |
 | Request limits | Worker headers, Content-Length limit and in-memory 120/minute/IP limiter exist | Enforce a streamed body limit in the route; the in-memory limiter is not global |
 
 The audit also found that `lib/customer-auth.ts` falls back to a DEV
@@ -122,6 +123,8 @@ source handoff when one is available.
   has been deployed. The observed ACC v4 deployment predates this integration.
 - The native Sites connector was usable in the Site owner task for source and
   version inspection; the current CMS/ERP task cannot call those tools directly.
-- The `/api/erp/v1` adapter, D1 mapping, service-auth boundary and security
-  controls still need implementation and authenticated synthetic-data REST
-  acceptance in ACC before production work.
+- The `/api/erp/v1` adapter, runtime architecture decision, D1 mapping or
+  external Node-service bridge, service-auth boundary and security controls
+  still need implementation and authenticated synthetic-data REST acceptance
+  in ACC before production work. Do not import the synchronous `node:sqlite`
+  engines directly into the Site Worker.
