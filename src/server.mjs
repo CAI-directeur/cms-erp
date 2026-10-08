@@ -162,6 +162,27 @@ async function route(req, res) {
     if (!actor || !csrfToken) return json(res, 401, { error: 'AUTH_REQUIRED', requestId });
     return json(res, 200, { data: { actor, csrfToken } });
   }
+  if (req.method === 'POST' && url.pathname === '/api/auth/password') {
+    const actor = auth.actor(req);
+    if (!actor) return json(res, 401, { error: 'AUTH_REQUIRED', requestId });
+    if (req.headers.origin !== allowedOrigin || !auth.verifyCsrf(req, actor)) {
+      return json(res, 403, { error: 'CSRF_REJECTED', requestId });
+    }
+    const input = await readJson(req);
+    if (!input || Object.keys(input).some((key) => !['currentPassword', 'newPassword'].includes(key))) {
+      return json(res, 400, { error: 'INVALID_PASSWORD_REQUEST', requestId });
+    }
+    const result = auth.changePassword(req, actor, input.currentPassword, input.newPassword);
+    if (result.error) {
+      const status = result.error === 'AUTH_REQUIRED' ? 401
+        : result.error === 'PASSWORD_CHANGED_CONCURRENTLY' ? 409
+          : 400;
+      return json(res, status, { error: result.error, requestId });
+    }
+    return json(res, 200, { data: { actor: result.actor, csrfToken: result.csrfToken } }, {
+      'Set-Cookie': sessionCookie(result.token, { secure: secureCookies }),
+    });
+  }
   if (url.pathname === '/api/users' && req.method === 'GET') {
     if (auth.actor(req)?.role !== 'admin') return json(res, 403, { error: 'FORBIDDEN', requestId });
     return json(res, 200, { data: auth.listUsers() });

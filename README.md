@@ -61,8 +61,11 @@ an exact `CMS_ERP_ORIGIN` using HTTPS, secure cookies, TLS at the public edge,
 backups, monitoring and a persistent private data volume.
 
 The first admin can use the content and ERP screens and provision role-based
-accounts. Password reset, account recovery, MFA, tenant isolation and a complete
-team administration flow are not implemented yet.
+accounts. Every signed-in user can change their password after confirming the
+current password; changing it rotates the current session and revokes the
+account's other sessions. Email-based password reset/account recovery, MFA,
+tenant isolation and a complete team administration flow are not implemented
+yet.
 
 ## Verify the modules
 

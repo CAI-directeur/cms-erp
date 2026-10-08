@@ -241,6 +241,7 @@ async function start() {
   try {
     session = await request('/api/auth/session');
     byId('welcome').textContent = `Ingelogd als ${session.actor.email} · rol ${session.actor.role}`;
+    createPasswordPanel();
     if (!['admin', 'editor', 'publisher'].includes(session.actor.role)) byId('content').hidden = true;
     if (!['admin', 'editor'].includes(session.actor.role)) {
       contentForm.hidden = true;
@@ -255,6 +256,48 @@ async function start() {
   } catch (error) {
     if (error.message !== 'AUTH_REQUIRED') byId('welcome').textContent = `Laden mislukt: ${error.message}`;
   }
+}
+
+function createPasswordPanel() {
+  const section = document.createElement('section');
+  section.id = 'security'; section.className = 'panel';
+  const heading = document.createElement('div'); heading.className = 'section-heading';
+  const title = document.createElement('div');
+  const eyebrow = document.createElement('p'); eyebrow.className = 'eyebrow'; eyebrow.textContent = 'Accountbeveiliging';
+  const h2 = document.createElement('h2'); h2.textContent = 'Wachtwoord wijzigen';
+  title.append(eyebrow, h2); heading.append(title); section.append(heading);
+  const note = document.createElement('p'); note.className = 'muted';
+  note.textContent = 'Gebruik een uniek wachtwoord van minimaal 14 tekens. Na de wijziging worden andere sessies afgemeld.';
+  const form = document.createElement('form'); form.className = 'form-grid';
+  const addPassword = (name, labelText, autocomplete) => {
+    const label = document.createElement('label'); label.append(document.createTextNode(labelText));
+    const input = document.createElement('input'); input.type = 'password'; input.name = name;
+    input.autocomplete = autocomplete; input.minLength = name === 'currentPassword' ? 1 : 14;
+    input.maxLength = 1024; input.required = true; label.append(input); form.append(label);
+  };
+  addPassword('currentPassword', 'Huidig wachtwoord', 'current-password');
+  addPassword('newPassword', 'Nieuw wachtwoord', 'new-password');
+  addPassword('confirmPassword', 'Nieuw wachtwoord herhalen', 'new-password');
+  const submit = document.createElement('button'); submit.type = 'submit'; submit.textContent = 'Wachtwoord opslaan';
+  const feedback = document.createElement('p'); feedback.className = 'message'; feedback.setAttribute('role', 'status');
+  form.append(submit, feedback); section.append(note, form); byId('content').before(section);
+  const navLink = document.createElement('a'); navLink.href = '#security'; navLink.textContent = 'Beveiliging';
+  document.querySelector('.topbar nav').append(navLink);
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const values = fields(form);
+    if (values.newPassword !== values.confirmPassword) {
+      message(feedback, 'De nieuwe wachtwoorden komen niet overeen.', true); return;
+    }
+    try {
+      session = await request('/api/auth/password', {
+        method: 'POST', headers: postHeaders(),
+        body: JSON.stringify({ currentPassword: values.currentPassword, newPassword: values.newPassword }),
+      });
+      form.reset();
+      message(feedback, 'Wachtwoord bijgewerkt. Andere sessies zijn afgemeld.');
+    } catch (error) { message(feedback, `Niet bijgewerkt: ${error.message}`, true); }
+  });
 }
 
 function createUserPanel() {

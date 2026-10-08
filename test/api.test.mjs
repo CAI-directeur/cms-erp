@@ -268,4 +268,54 @@ test('authenticated REST APIs complete a CMS and service ERP workflow', async ()
   const financeExport = await request('/api/operations/bookkeeping', { cookie: admin.cookie });
   assert.equal(financeExport.response.status, 200);
   assert.equal(financeExport.payload.data.entries.length, 2);
+
+  const secondAdminSession = await login(adminEmail, adminPassword);
+  const passwordPayload = { currentPassword: adminPassword, newPassword: 'new-test-password-with-30-chars' };
+  const passwordCsrfRejected = await request('/api/auth/password', {
+    cookie: admin.cookie, method: 'POST', body: passwordPayload,
+  });
+  assert.equal(passwordCsrfRejected.response.status, 403);
+  const passwordWrongCurrent = await request('/api/auth/password', {
+    cookie: admin.cookie, csrf: admin.csrf, method: 'POST',
+    body: { ...passwordPayload, currentPassword: 'incorrect-current-password' },
+  });
+  assert.equal(passwordWrongCurrent.response.status, 400);
+  assert.equal(passwordWrongCurrent.payload.error, 'CURRENT_PASSWORD_INVALID');
+  const passwordMissingCurrent = await request('/api/auth/password', {
+    cookie: admin.cookie, csrf: admin.csrf, method: 'POST',
+    body: { newPassword: passwordPayload.newPassword },
+  });
+  assert.equal(passwordMissingCurrent.response.status, 400);
+  assert.equal(passwordMissingCurrent.payload.error, 'INVALID_CURRENT_PASSWORD');
+  const passwordTooShort = await request('/api/auth/password', {
+    cookie: admin.cookie, csrf: admin.csrf, method: 'POST',
+    body: { currentPassword: adminPassword, newPassword: 'too-short' },
+  });
+  assert.equal(passwordTooShort.response.status, 400);
+  const passwordUnchanged = await request('/api/auth/password', {
+    cookie: admin.cookie, csrf: admin.csrf, method: 'POST',
+    body: { currentPassword: adminPassword, newPassword: adminPassword },
+  });
+  assert.equal(passwordUnchanged.response.status, 400);
+  assert.equal(passwordUnchanged.payload.error, 'PASSWORD_UNCHANGED');
+  const passwordChanged = await request('/api/auth/password', {
+    cookie: admin.cookie, csrf: admin.csrf, method: 'POST', body: passwordPayload,
+  });
+  assert.equal(passwordChanged.response.status, 200);
+  assert.equal(passwordChanged.payload.data.actor.email, adminEmail);
+  assert.ok(passwordChanged.payload.data.csrfToken);
+  const rotatedCookie = passwordChanged.response.headers.get('set-cookie')?.split(';', 1)[0];
+  assert.match(rotatedCookie ?? '', /^cms_erp_session=[A-Za-z0-9_-]{43}$/u);
+  const rotatedSession = await request('/api/auth/session', { cookie: rotatedCookie });
+  assert.equal(rotatedSession.response.status, 200);
+  assert.equal(rotatedSession.payload.data.csrfToken, passwordChanged.payload.data.csrfToken);
+  assert.equal((await request('/api/auth/session', { cookie: admin.cookie })).response.status, 401);
+  assert.equal((await request('/api/auth/session', { cookie: secondAdminSession.cookie })).response.status, 401);
+  const oldPasswordLogin = await fetch(new URL('/login', origin), {
+    method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ email: adminEmail, password: adminPassword }), redirect: 'manual',
+  });
+  assert.equal(oldPasswordLogin.status, 401);
+  const newPasswordSession = await login(adminEmail, passwordPayload.newPassword);
+  assert.equal(newPasswordSession.actor.role, 'admin');
 });

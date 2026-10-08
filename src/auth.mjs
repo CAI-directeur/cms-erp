@@ -121,6 +121,57 @@ export class AuthStore {
     return { token, actor: { id: user.id, email: user.email, role: user.role } };
   }
 
+  changePassword(req, actor, currentPassword, newPassword) {
+    const session = this.#session(req);
+    if (!session || session.actor.id !== actor?.id) return { error: 'AUTH_REQUIRED' };
+    if (typeof currentPassword !== 'string' || currentPassword.length > 1024) {
+      return { error: 'INVALID_CURRENT_PASSWORD' };
+    }
+    if (typeof newPassword !== 'string' || newPassword.length < 14 || newPassword.length > 1024) {
+      return { error: 'INVALID_NEW_PASSWORD' };
+    }
+    if (currentPassword === newPassword) return { error: 'PASSWORD_UNCHANGED' };
+
+    const user = this.#db.prepare(
+      'SELECT id,email,role,password_hash,password_salt,active FROM app_users WHERE id=?',
+    ).get(actor.id);
+    if (!user || !user.active) return { error: 'AUTH_REQUIRED' };
+    const oldSalt = Buffer.from(user.password_salt, 'hex');
+    const oldHash = Buffer.from(user.password_hash, 'hex');
+    const suppliedHash = scryptSync(currentPassword, oldSalt, 64);
+    if (suppliedHash.length !== oldHash.length || !timingSafeEqual(suppliedHash, oldHash)) {
+      return { error: 'CURRENT_PASSWORD_INVALID' };
+    }
+
+    const nextSalt = randomBytes(16);
+    const nextHash = scryptSync(newPassword, nextSalt, 64);
+    const token = randomBytes(32).toString('base64url');
+    const now = Date.now();
+    this.#db.exec('BEGIN IMMEDIATE');
+    try {
+      const update = this.#db.prepare(`
+        UPDATE app_users SET password_hash=?,password_salt=?
+        WHERE id=? AND password_hash=? AND password_salt=? AND active=1
+      `).run(nextHash.toString('hex'), nextSalt.toString('hex'), actor.id, user.password_hash, user.password_salt);
+      if (Number(update.changes) !== 1) {
+        this.#db.exec('ROLLBACK');
+        return { error: 'PASSWORD_CHANGED_CONCURRENTLY' };
+      }
+      this.#db.prepare('DELETE FROM app_sessions WHERE user_id=?').run(actor.id);
+      this.#db.prepare('INSERT INTO app_sessions(token_hash,user_id,expires_at,created_at) VALUES(?,?,?,?)')
+        .run(tokenDigest(token), actor.id, now + sessionLifetimeMs, now);
+      this.#db.exec('COMMIT');
+      return {
+        token,
+        actor: { id: user.id, email: user.email, role: user.role },
+        csrfToken: createHmac('sha256', this.#csrfSecret).update(token, 'utf8').digest('base64url'),
+      };
+    } catch (error) {
+      try { this.#db.exec('ROLLBACK'); } catch { /* the transaction may already be closed */ }
+      throw error;
+    }
+  }
+
   listUsers() {
     return this.#db.prepare('SELECT id,email,role,active,created_at AS createdAt FROM app_users ORDER BY id').all();
   }
