@@ -34,3 +34,26 @@ test('Resend sender refuses insecure reset links and does not accept partial con
   await assert.rejects(send({ to: 'user@example.test', url: `https://other.example.test/password-reset#token=${token}` }), /INVALID_PASSWORD_RESET_URL/u);
   await assert.rejects(send({ to: 'user@example.test', url: `https://cms.example.test/password-reset#token=${token}` }), /EMAIL_PROVIDER_REJECTED/u);
 });
+
+test('Resend invitation sender permits only an exact same-site one-time invitation URL', async () => {
+  let captured;
+  const send = createResendEmailSender({
+    apiKey: 'test-only-key',
+    from: 'noreply@example.test',
+    origin: 'https://cms.example.test',
+    fetchImpl: async (url, init) => {
+      captured = { url, init };
+      return new Response('{}', { status: 200 });
+    },
+  });
+  const token = 'i'.repeat(43);
+  const link = `https://cms.example.test/invite#token=${token}`;
+  await send.sendInvitation({ to: 'user@example.test', url: link });
+  assert.equal(captured.url, 'https://api.resend.com/emails');
+  const payload = JSON.parse(captured.init.body);
+  assert.equal(payload.subject, 'Uitnodiging voor CMS/ERP');
+  assert.equal(payload.to[0], 'user@example.test');
+  assert.equal(payload.text.includes(link), true);
+  await assert.rejects(send.sendInvitation({ to: 'user@example.test', url: `https://other.example.test/invite#token=${token}` }), /INVALID_INVITATION_URL/u);
+  await assert.rejects(send.sendInvitation({ to: 'user@example.test', url: `https://cms.example.test/password-reset#token=${token}` }), /INVALID_INVITATION_URL/u);
+});

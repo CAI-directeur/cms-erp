@@ -139,6 +139,10 @@ test('authenticated REST APIs complete a CMS and service ERP workflow', async ()
   assert.equal(passwordResetPage.response.status, 200);
   assert.equal(passwordResetPage.response.headers.get('referrer-policy'), 'no-referrer');
   assert.match(passwordResetPage.payload, /Wachtwoord herstellen/u);
+  const invitationPage = await request('/invite');
+  assert.equal(invitationPage.response.status, 200);
+  assert.equal(invitationPage.response.headers.get('referrer-policy'), 'no-referrer');
+  assert.match(invitationPage.payload, /Uitnodiging accepteren/u);
   const emailUnavailable = await request('/api/auth/password-reset/request', {
     method: 'POST', body: { email: 'admin@example.test' },
   });
@@ -167,6 +171,16 @@ test('authenticated REST APIs complete a CMS and service ERP workflow', async ()
   assert.match(adminPage.payload, /ERP-werkstromen/u);
   assert.match(adminPage.payload, /id="inventory-form"/u);
   assert.match(adminPage.payload, /id="credit-form"/u);
+
+  const invitationWithoutMail = await request('/api/user-invitations', {
+    cookie: admin.cookie, csrf: admin.csrf, method: 'POST',
+    body: { email: 'invite-no-mail@example.test', role: 'reader' },
+    idempotencyKey: 'api-invitation-no-mail-001',
+  });
+  assert.equal(invitationWithoutMail.response.status, 503);
+  assert.equal(invitationWithoutMail.payload.error, 'EMAIL_DELIVERY_DISABLED');
+  const invitationsWithoutMail = await request('/api/user-invitations', { cookie: admin.cookie });
+  assert.deepEqual(invitationsWithoutMail.payload.data, []);
 
   const content = {
     type: 'page',

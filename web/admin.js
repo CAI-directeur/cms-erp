@@ -793,30 +793,31 @@ function createUserPanel() {
   const h2 = document.createElement('h2'); h2.textContent = 'Gebruikers';
   title.append(eyebrow, h2); heading.append(title);
   const note = document.createElement('p'); note.className = 'muted';
-  note.textContent = 'Alleen admins kunnen accounts toevoegen. Gebruik voor elk account een uniek wachtwoord van minimaal 14 tekens.';
+  note.textContent = 'Alleen admins kunnen gebruikers uitnodigen. De ontvanger stelt zelf een uniek wachtwoord in via een eenmalige link die zeven dagen geldig is. Uitnodigingen versturen vereist Resend-configuratie.';
   if (session.auth0McpEnabled) note.textContent += ' Auth0-koppelingen gebruiken een eenmalige code die na tien minuten verloopt.';
   const grid = document.createElement('div'); grid.className = 'content-grid';
   const form = document.createElement('form'); form.id = 'user-form'; form.className = 'form-grid';
-  const formTitle = document.createElement('h3'); formTitle.textContent = 'Gebruiker toevoegen'; form.append(formTitle);
+  const formTitle = document.createElement('h3'); formTitle.textContent = 'Gebruiker uitnodigen'; form.append(formTitle);
   const addField = (labelText, name, type, options) => {
     const label = document.createElement('label'); label.append(document.createTextNode(labelText));
     const control = document.createElement(options ? 'select' : 'input');
     control.name = name; control.required = true;
     if (options) for (const [value, text] of options) { const option = document.createElement('option'); option.value = value; option.textContent = text; control.append(option); }
-    else { control.type = type; control.maxLength = name === 'password' ? 1024 : 254; if (name === 'password') { control.minLength = 14; control.autocomplete = 'new-password'; } }
+    else { control.type = type; control.maxLength = 254; }
     label.append(control); form.append(label);
   };
   addField('E-mailadres', 'email', 'email');
   addField('Rol', 'role', null, [['editor','CMS-editor'],['publisher','CMS-uitgever'],['planner','ERP-planner'],['technician','ERP-monteur'],['finance','ERP-financiën'],['reader','Alleen lezen'],['admin','Admin']]);
-  addField('Tijdelijk wachtwoord', 'password', 'password');
-  const submit = document.createElement('button'); submit.type = 'submit'; submit.textContent = 'Account aanmaken'; form.append(submit);
+  const submit = document.createElement('button'); submit.type = 'submit'; submit.textContent = 'Uitnodiging versturen'; form.append(submit);
   const feedback = document.createElement('p'); feedback.id = 'user-message'; feedback.className = 'message'; feedback.setAttribute('role', 'status'); form.append(feedback);
   const listColumn = document.createElement('div');
   const toolbar = document.createElement('div'); toolbar.className = 'list-toolbar';
   const listTitle = document.createElement('h3'); listTitle.textContent = 'Accounts';
   const refresh = document.createElement('button'); refresh.type = 'button'; refresh.className = 'button-secondary'; refresh.textContent = 'Verversen';
   const list = document.createElement('div'); list.id = 'user-list'; list.className = 'record-list'; list.setAttribute('aria-live', 'polite');
-  toolbar.append(listTitle, refresh); listColumn.append(toolbar, list); grid.append(form, listColumn); section.append(heading, note, grid);
+  const invitationTitle = document.createElement('h3'); invitationTitle.textContent = 'Openstaande uitnodigingen';
+  const invitationList = document.createElement('div'); invitationList.id = 'invitation-list'; invitationList.className = 'record-list'; invitationList.setAttribute('aria-live', 'polite');
+  toolbar.append(listTitle, refresh); listColumn.append(toolbar, list, invitationTitle, invitationList); grid.append(form, listColumn); section.append(heading, note, grid);
   byId('operations').after(section);
   const navLink = document.createElement('a'); navLink.href = '#users'; navLink.textContent = 'Gebruikers'; document.querySelector('.topbar nav').append(navLink);
   async function loadUsers() {
@@ -890,17 +891,45 @@ function createUserPanel() {
     }
     if (!users.length) list.textContent = 'Geen accounts gevonden.';
   }
+  async function loadInvitations() {
+    invitationList.replaceChildren(document.createTextNode('Laden…'));
+    const invitations = await request('/api/user-invitations');
+    invitationList.replaceChildren();
+    for (const invitation of invitations) {
+      const row = document.createElement('article'); row.className = 'record-card';
+      const details = document.createElement('div');
+      const email = document.createElement('strong'); email.textContent = invitation.email;
+      const expiration = document.createElement('p');
+      expiration.textContent = `${invitation.role} · verloopt ${new Date(invitation.expiresAt).toLocaleString('nl-NL')}`;
+      details.append(email, expiration);
+      const resend = document.createElement('button'); resend.type = 'button'; resend.className = 'button-secondary'; resend.textContent = 'Nieuwe link sturen';
+      resend.addEventListener('click', async () => {
+        resend.disabled = true;
+        try {
+          await postIntent('/api/user-invitations', { email: invitation.email, role: invitation.role }, { sensitive: true, scope: `user-invitation-${invitation.email}` });
+          message(feedback, `Nieuwe uitnodigingslink verstuurd naar ${invitation.email}. De vorige link is daarna ongeldig.`);
+          await loadInvitations();
+        } catch (error) {
+          message(feedback, errorText('Nieuwe uitnodigingslink niet verstuurd', error), true);
+          resend.disabled = false;
+        }
+      });
+      row.append(details, resend); invitationList.append(row);
+    }
+    if (!invitations.length) invitationList.textContent = 'Geen openstaande uitnodigingen.';
+  }
   refresh.addEventListener('click', () => loadUsers().catch((error) => message(feedback, errorText('Laden mislukt', error), true)));
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
     try {
       const values = fields(form);
-      await postIntent('/api/users', values, { sensitive: true, scope: 'users-create' });
-      form.reset(); message(feedback, 'Account aangemaakt.');
-      await Promise.all([loadUsers(), refreshReferences(['resources'])]);
-    } catch (error) { message(feedback, errorText('Niet aangemaakt', error), true); }
+      await postIntent('/api/user-invitations', values, { sensitive: true, scope: `user-invitation-${values.email.trim().toLowerCase()}` });
+      form.reset(); message(feedback, `Uitnodiging verstuurd naar ${values.email}.`);
+      await loadInvitations();
+    } catch (error) { message(feedback, errorText('Uitnodiging niet verstuurd', error), true); }
   });
   loadUsers().catch((error) => { list.textContent = `Laden mislukt: ${error.message}`; });
+  loadInvitations().catch((error) => { invitationList.textContent = `Laden mislukt: ${error.message}`; });
 }
 
 byId('logout-button').addEventListener('click', async () => {

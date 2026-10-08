@@ -3,7 +3,7 @@ import { createServer } from 'node:http';
 import { chmodSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { AuthStore, sessionCookie } from './auth.mjs';
 import { createResendEmailSender } from './email.mjs';
 import { ContentService, renderPublicContent } from '../modules/content-management/engine.mjs';
@@ -66,6 +66,7 @@ const handleOperations = createOperationsHandler({
 
 const loginHtml = `<!doctype html><html lang="nl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Inloggen · CMS/ERP</title><link rel="stylesheet" href="/assets/app.css"></head><body class="login-page"><main class="login-card"><p class="eyebrow">CMS · ERP</p><h1>Inloggen</h1><p>Gebruik het account dat voor deze installatie is ingesteld.</p><form method="post" action="/login"><label>E-mailadres<input name="email" type="email" autocomplete="username" maxlength="254" required></label><label>Wachtwoord<input name="password" type="password" autocomplete="current-password" maxlength="1024" required></label><label>Verificatie- of herstelcode (indien ingeschakeld)<input name="mfaCode" type="text" autocomplete="one-time-code" maxlength="128"></label><button type="submit">Inloggen</button><p class="form-error" role="alert">{{ERROR}}</p></form><p><a href="/password-reset">Wachtwoord vergeten?</a></p></main></body></html>`;
 const passwordResetHtml = `<!doctype html><html lang="nl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Wachtwoord herstellen · CMS/ERP</title><link rel="stylesheet" href="/assets/app.css"><script src="/assets/password-reset.js" defer></script></head><body class="login-page"><main class="login-card"><p class="eyebrow">CMS · ERP</p><h1>Wachtwoord herstellen</h1><p id="reset-intro">Vraag een beveiligde herstellink aan voor je account.</p><form id="request-reset"><label>E-mailadres<input name="email" type="email" autocomplete="email" maxlength="254" required></label><button type="submit">Verstuur herstellink</button></form><form id="complete-reset" hidden><label>Nieuw wachtwoord<input name="password" type="password" autocomplete="new-password" minlength="14" maxlength="1024" required></label><label>Herhaal nieuw wachtwoord<input name="confirm" type="password" autocomplete="new-password" minlength="14" maxlength="1024" required></label><button type="submit">Wachtwoord opslaan</button></form><p id="reset-feedback" class="form-error" role="status" aria-live="polite"></p><p><a href="/login">Terug naar inloggen</a></p></main></body></html>`;
+const invitationHtml = `<!doctype html><html lang="nl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Uitnodiging · CMS/ERP</title><link rel="stylesheet" href="/assets/app.css"><script src="/assets/invitation.js" defer></script></head><body class="login-page"><main class="login-card"><p class="eyebrow">CMS · ERP</p><h1>Uitnodiging accepteren</h1><p>Stel een uniek wachtwoord in om je account te activeren.</p><form id="accept-invitation"><label>Nieuw wachtwoord<input name="password" type="password" autocomplete="new-password" minlength="14" maxlength="1024" required></label><label>Wachtwoord herhalen<input name="confirm" type="password" autocomplete="new-password" minlength="14" maxlength="1024" required></label><button type="submit">Account activeren</button></form><p id="invitation-feedback" class="form-error" role="status" aria-live="polite"></p><p><a href="/login">Naar inloggen</a></p></main></body></html>`;
 const adminHtml = readFileSync(resolve(webRoot, 'admin.html'), 'utf8');
 
 function escapeHtml(value) {
@@ -179,6 +180,22 @@ async function route(req, res) {
   if (req.method === 'GET' && url.pathname === '/assets/app.css') return asset(res, 'app.css', 'text/css; charset=utf-8');
   if (req.method === 'GET' && url.pathname === '/assets/admin.js') return asset(res, 'admin.js', 'text/javascript; charset=utf-8');
   if (req.method === 'GET' && url.pathname === '/assets/password-reset.js') return asset(res, 'password-reset.js', 'text/javascript; charset=utf-8');
+  if (req.method === 'GET' && url.pathname === '/assets/invitation.js') return asset(res, 'invitation.js', 'text/javascript; charset=utf-8');
+
+  if (req.method === 'POST' && url.pathname === '/api/auth/invitations/accept') {
+    if (req.headers.origin !== allowedOrigin) return json(res, 403, { error: 'ORIGIN_REJECTED', requestId });
+    const input = await readJson(req);
+    if (!input || Object.keys(input).some((key) => !['token', 'password'].includes(key))) return json(res, 400, { error: 'INVALID_INVITATION', requestId });
+    const tokenKey = typeof input.token === 'string' ? input.token.slice(0, 128) : 'invalid-token';
+    if (!auth.consumeRateLimits([
+      { key: 'invitation-accept:global', limit: 1000, windowMs: 60 * 60 * 1000 },
+      { key: `invitation-accept:ip:${req.socket.remoteAddress ?? 'unknown'}`, limit: 50, windowMs: 60 * 60 * 1000 },
+      { key: `invitation-accept:token:${tokenKey}`, limit: 5, windowMs: 60 * 60 * 1000 },
+    ])) return json(res, 429, { error: 'INVITATION_RATE_LIMITED', requestId });
+    const result = auth.acceptInvitation(input.token, input.password);
+    if (result.error) return json(res, 400, { error: result.error, requestId });
+    return json(res, 201, { data: result.data });
+  }
 
   if (req.method === 'POST' && url.pathname === '/api/auth/password-reset/request') {
     if (req.headers.origin !== allowedOrigin) return json(res, 403, { error: 'ORIGIN_REJECTED', requestId });
@@ -311,6 +328,42 @@ async function route(req, res) {
     if (auth.actor(req)?.role !== 'admin') return json(res, 403, { error: 'FORBIDDEN', requestId });
     return json(res, 200, { data: auth.listUsers() });
   }
+  if (url.pathname === '/api/user-invitations' && req.method === 'GET') {
+    if (auth.actor(req)?.role !== 'admin') return json(res, 403, { error: 'FORBIDDEN', requestId });
+    return json(res, 200, { data: auth.listInvitations() });
+  }
+  if (url.pathname === '/api/user-invitations' && req.method === 'POST') {
+    const actor = auth.actor(req);
+    if (actor?.role !== 'admin') return json(res, 403, { error: 'FORBIDDEN', requestId });
+    if (req.headers.origin !== allowedOrigin || !auth.verifyCsrf(req, actor)) return json(res, 403, { error: 'CSRF_REJECTED', requestId });
+    if (!emailSender) return json(res, 503, { error: 'EMAIL_DELIVERY_DISABLED', requestId });
+    const input = await readJson(req);
+    if (!input || Object.keys(input).some((key) => !['email', 'role'].includes(key))) return json(res, 400, { error: 'INVALID_INVITATION', requestId });
+    if (!auth.consumeRateLimits([
+      { key: 'invitation-create:global', limit: 500, windowMs: 60 * 60 * 1000 },
+      { key: `invitation-create:actor:${actor.id}`, limit: 30, windowMs: 60 * 60 * 1000 },
+      { key: `invitation-create:ip:${req.socket.remoteAddress ?? 'unknown'}`, limit: 100, windowMs: 60 * 60 * 1000 },
+    ])) return json(res, 429, { error: 'INVITATION_RATE_LIMITED', requestId });
+    const token = randomBytes(32).toString('base64url');
+    const result = auth.createInvitation(actor, req.headers['idempotency-key'], { ...input, token });
+    if (result.error) {
+      const status = ['EMAIL_IN_USE', 'INVITATION_EXISTS', 'IDEMPOTENCY_CONFLICT'].includes(result.error) ? 409
+        : result.error === 'FORBIDDEN' ? 403 : 400;
+      return json(res, status, { error: result.error, requestId });
+    }
+    if (result.data.alreadyCreated) return json(res, 200, { data: { email: result.data.email, role: result.data.role, expiresAt: result.data.expiresAt, alreadySent: true } });
+    const invitationUrl = new URL('/invite', allowedOrigin);
+    invitationUrl.hash = new URLSearchParams({ token: result.data.token }).toString();
+    try {
+      await emailSender.sendInvitation({ to: result.data.email, url: invitationUrl.href });
+      if (!auth.activateInvitation(token)) throw new Error('INVITATION_ACTIVATION_FAILED');
+      return json(res, 201, { data: { email: result.data.email, role: result.data.role, expiresAt: result.data.expiresAt } });
+    } catch {
+      try { auth.discardPendingInvitation(token); } catch { /* preserve the provider failure */ }
+      console.error(JSON.stringify({ event: 'user_invitation_delivery_failed', requestId }));
+      return json(res, 503, { error: 'INVITATION_DELIVERY_FAILED', requestId });
+    }
+  }
   const userMatch = /^\/api\/users\/([1-9]\d*)$/u.exec(url.pathname);
   if (userMatch && req.method === 'PATCH') {
     const actor = auth.actor(req);
@@ -373,6 +426,9 @@ async function route(req, res) {
   }
   if (req.method === 'GET' && url.pathname === '/password-reset') {
     return send(res, 200, passwordResetHtml, 'text/html; charset=utf-8', { 'Referrer-Policy': 'no-referrer' });
+  }
+  if (req.method === 'GET' && url.pathname === '/invite') {
+    return send(res, 200, invitationHtml, 'text/html; charset=utf-8', { 'Referrer-Policy': 'no-referrer' });
   }
   if (req.method === 'POST' && url.pathname === '/login') {
     if (req.headers.origin !== allowedOrigin) return send(res, 403, loginHtml.replace('{{ERROR}}', 'Ongeldige aanmeldpoging.'));

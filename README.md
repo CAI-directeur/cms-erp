@@ -76,9 +76,12 @@ SQLite database is stored under the ignored `var/` directory by default; set
 an exact `CMS_ERP_ORIGIN` using HTTPS, secure cookies, TLS at the public edge,
 backups, monitoring and a persistent private data volume.
 
-The first admin can use the content and ERP screens and provision role-based
-accounts. Admins can change account roles or deactivate accounts; each change is
-audited, idempotent, and revokes the affected account's sessions. The last
+The first admin can use the content and ERP screens and invite role-based
+accounts. Invitation links are single-use, expire after seven days, and let the
+recipient set their own password. Resending rotates the previous link. Invite
+delivery requires Resend configuration in the private runtime. Admins can
+change account roles or deactivate accounts; each change is audited,
+idempotent, and revokes the affected account's sessions. The last
 active admin cannot be removed. Every signed-in user can change their password
 after confirming the current password; changing it rotates the current session
 and revokes the account's other sessions. Password recovery is available when
@@ -96,8 +99,8 @@ encoded in 64 hexadecimal characters. Back up that key with the private
 database: startup fails closed if MFA-enabled accounts exist and the key is
 missing. The authenticator secret is encrypted at rest with AES-256-GCM. The
 key is separate from `AUTH0_*`, which configures the optional MCP resource
-server. Tenant isolation and a complete team invitation flow are not
-implemented yet.
+server. Tenant isolation, invitation revocation, and production-grade team
+administration are not implemented yet.
 
 ## Verify the modules
 

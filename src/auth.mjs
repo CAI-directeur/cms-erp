@@ -134,6 +134,37 @@ export class AuthStore {
         BEFORE UPDATE ON app_user_admin_audit BEGIN SELECT RAISE(ABORT,'immutable user administration audit'); END;
       CREATE TRIGGER IF NOT EXISTS app_user_admin_audit_no_delete
         BEFORE DELETE ON app_user_admin_audit BEGIN SELECT RAISE(ABORT,'immutable user administration audit'); END;
+      CREATE TABLE IF NOT EXISTS app_user_invitations (
+        id INTEGER PRIMARY KEY,
+        email TEXT NOT NULL,
+        role TEXT NOT NULL CHECK(role IN ('admin','editor','publisher','planner','technician','finance','reader')),
+        token_hash TEXT NOT NULL UNIQUE,
+        invited_by INTEGER NOT NULL REFERENCES app_users(id),
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        delivery_state TEXT NOT NULL CHECK(delivery_state IN ('pending','active')),
+        accepted_at INTEGER,
+        revoked_at INTEGER
+      );
+      CREATE INDEX IF NOT EXISTS app_user_invitations_email ON app_user_invitations(email,expires_at);
+      CREATE TABLE IF NOT EXISTS app_user_invitation_idempotency (
+        actor_id INTEGER NOT NULL REFERENCES app_users(id),
+        idem_key TEXT NOT NULL,
+        fingerprint TEXT NOT NULL,
+        invitation_id INTEGER NOT NULL REFERENCES app_user_invitations(id) ON DELETE CASCADE,
+        PRIMARY KEY(actor_id,idem_key)
+      );
+      CREATE TABLE IF NOT EXISTS app_user_invitation_audit (
+        id INTEGER PRIMARY KEY,
+        invitation_id INTEGER NOT NULL REFERENCES app_user_invitations(id),
+        actor_id INTEGER NOT NULL REFERENCES app_users(id),
+        event TEXT NOT NULL CHECK(event IN ('created','accepted','revoked')),
+        occurred_at INTEGER NOT NULL
+      );
+      CREATE TRIGGER IF NOT EXISTS app_user_invitation_audit_no_update
+        BEFORE UPDATE ON app_user_invitation_audit BEGIN SELECT RAISE(ABORT,'immutable invitation audit'); END;
+      CREATE TRIGGER IF NOT EXISTS app_user_invitation_audit_no_delete
+        BEFORE DELETE ON app_user_invitation_audit BEGIN SELECT RAISE(ABORT,'immutable invitation audit'); END;
       CREATE TABLE IF NOT EXISTS app_mfa_enrollments (
         user_id INTEGER PRIMARY KEY REFERENCES app_users(id) ON DELETE CASCADE,
         secret_encrypted TEXT NOT NULL,
@@ -526,6 +557,142 @@ export class AuthStore {
 
   listUsers() {
     return this.#db.prepare('SELECT id,email,role,active,created_at AS createdAt,(auth0_subject IS NOT NULL) AS auth0Linked FROM app_users ORDER BY id').all();
+  }
+
+  listInvitations() {
+    const now = Date.now();
+    return this.#db.prepare(`
+      SELECT id,email,role,created_at AS createdAt,expires_at AS expiresAt
+      FROM app_user_invitations
+      WHERE delivery_state='active' AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at>?
+      ORDER BY created_at DESC,id DESC
+    `).all(now);
+  }
+
+  createInvitation(actor, key, { email: emailValue, role, token } = {}) {
+    const email = normalizedEmail(emailValue);
+    if (!email || !roles.has(role) || typeof token !== 'string' || !/^[A-Za-z0-9_-]{43}$/u.test(token)) return { error: 'INVALID_INVITATION' };
+    if (typeof key !== 'string' || !/^[A-Za-z0-9._:-]{8,100}$/u.test(key)) return { error: 'IDEMPOTENCY_KEY_REQUIRED' };
+    if (actor?.role !== 'admin' || !Number.isSafeInteger(actor.id) || actor.id < 1) return { error: 'FORBIDDEN' };
+    const fingerprint = createHmac('sha256', this.#csrfSecret)
+      .update(JSON.stringify({ email, role }), 'utf8').digest('hex');
+    const tokenHash = tokenDigest(token);
+    const now = Date.now();
+    const expiresAt = now + 7 * 24 * 60 * 60 * 1000;
+    this.#db.exec('BEGIN IMMEDIATE');
+    try {
+      const currentActor = this.#db.prepare('SELECT role,active FROM app_users WHERE id=?').get(actor.id);
+      if (!currentActor || currentActor.role !== 'admin' || currentActor.active !== 1) {
+        this.#db.exec('ROLLBACK');
+        return { error: 'FORBIDDEN' };
+      }
+      const prior = this.#db.prepare(`
+        SELECT fingerprint,invitation_id FROM app_user_invitation_idempotency WHERE actor_id=? AND idem_key=?
+      `).get(actor.id, key);
+      if (prior) {
+        const invitation = prior.fingerprint === fingerprint
+        ? this.#db.prepare(`SELECT email,role,expires_at,delivery_state,accepted_at,revoked_at FROM app_user_invitations WHERE id=?`).get(prior.invitation_id)
+          : null;
+        this.#db.exec('COMMIT');
+        if (prior.fingerprint !== fingerprint) return { error: 'IDEMPOTENCY_CONFLICT' };
+        if (!invitation || invitation.delivery_state !== 'active' || invitation.accepted_at !== null || invitation.revoked_at !== null || invitation.expires_at <= now) return { error: 'INVITATION_EXPIRED' };
+        return { data: { email: invitation.email, role: invitation.role, expiresAt: invitation.expires_at, alreadyCreated: true } };
+      }
+      if (this.#db.prepare('SELECT 1 FROM app_users WHERE email=?').get(email)) {
+        this.#db.exec('ROLLBACK');
+        return { error: 'EMAIL_IN_USE' };
+      }
+      this.#db.prepare("DELETE FROM app_user_invitations WHERE delivery_state='pending' AND created_at<?").run(now - 10 * 60 * 1000);
+      if (this.#db.prepare("SELECT 1 FROM app_user_invitations WHERE email=? AND delivery_state='pending' AND created_at>=?").get(email, now - 10 * 60 * 1000)) {
+        this.#db.exec('ROLLBACK');
+        return { error: 'INVITATION_DELIVERY_PENDING' };
+      }
+      const inserted = this.#db.prepare(`
+        INSERT INTO app_user_invitations(email,role,token_hash,invited_by,created_at,expires_at,delivery_state)
+        VALUES(?,?,?,?,?,?,'pending')
+      `).run(email, role, tokenHash, actor.id, now, expiresAt);
+      const invitationId = Number(inserted.lastInsertRowid);
+      this.#db.prepare(`
+        INSERT INTO app_user_invitation_idempotency(actor_id,idem_key,fingerprint,invitation_id) VALUES(?,?,?,?)
+      `).run(actor.id, key, fingerprint, invitationId);
+      this.#db.exec('COMMIT');
+      return { data: { id: invitationId, email, role, expiresAt, token } };
+    } catch (error) {
+      try { this.#db.exec('ROLLBACK'); } catch { /* preserve the original error */ }
+      throw error;
+    }
+  }
+
+  activateInvitation(token) {
+    if (typeof token !== 'string' || !/^[A-Za-z0-9_-]{43}$/u.test(token)) return false;
+    const now = Date.now();
+    this.#db.exec('BEGIN IMMEDIATE');
+    try {
+      const invitation = this.#db.prepare(`
+        SELECT id,email,invited_by,delivery_state,expires_at FROM app_user_invitations WHERE token_hash=?
+      `).get(tokenDigest(token));
+      if (!invitation || invitation.expires_at <= now || invitation.delivery_state !== 'pending') {
+        this.#db.exec('ROLLBACK');
+        return false;
+      }
+      const priorActive = this.#db.prepare(`
+        SELECT id,invited_by FROM app_user_invitations
+        WHERE email=? AND delivery_state='active' AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at>?
+      `).all(invitation.email, now);
+      for (const prior of priorActive) {
+        this.#db.prepare('UPDATE app_user_invitations SET revoked_at=? WHERE id=?').run(now, prior.id);
+        this.#db.prepare("INSERT INTO app_user_invitation_audit(invitation_id,actor_id,event,occurred_at) VALUES(?,?,'revoked',?)").run(prior.id, invitation.invited_by, now);
+      }
+      this.#db.prepare("UPDATE app_user_invitations SET delivery_state='active' WHERE id=? AND delivery_state='pending'").run(invitation.id);
+      this.#db.prepare("INSERT INTO app_user_invitation_audit(invitation_id,actor_id,event,occurred_at) VALUES(?,?,'created',?)").run(invitation.id, invitation.invited_by, now);
+      this.#db.exec('COMMIT');
+      return true;
+    } catch (error) {
+      try { this.#db.exec('ROLLBACK'); } catch { /* preserve the original error */ }
+      throw error;
+    }
+  }
+
+  discardPendingInvitation(token) {
+    if (typeof token !== 'string' || !/^[A-Za-z0-9_-]{43}$/u.test(token)) return false;
+    const result = this.#db.prepare("DELETE FROM app_user_invitations WHERE token_hash=? AND delivery_state='pending'").run(tokenDigest(token));
+    return Number(result.changes) === 1;
+  }
+
+  acceptInvitation(token, password) {
+    if (typeof token !== 'string' || !/^[A-Za-z0-9_-]{43}$/u.test(token) ||
+        typeof password !== 'string' || password.length < 14 || password.length > 1024) return { error: 'INVALID_OR_EXPIRED_INVITATION' };
+    const now = Date.now();
+    this.#db.exec('BEGIN IMMEDIATE');
+    try {
+      const invitation = this.#db.prepare(`
+        SELECT id,email,role,invited_by,expires_at,delivery_state,accepted_at,revoked_at
+        FROM app_user_invitations WHERE token_hash=?
+      `).get(tokenDigest(token));
+      if (!invitation || invitation.delivery_state !== 'active' || invitation.accepted_at !== null || invitation.revoked_at !== null || invitation.expires_at <= now) {
+        this.#db.exec('ROLLBACK');
+        return { error: 'INVALID_OR_EXPIRED_INVITATION' };
+      }
+      if (this.#db.prepare('SELECT 1 FROM app_users WHERE email=?').get(invitation.email)) {
+        this.#db.exec('ROLLBACK');
+        return { error: 'INVITATION_ALREADY_USED' };
+      }
+      const salt = randomBytes(16);
+      const passwordHash = scryptSync(password, salt, 64);
+      const createdAt = new Date(now).toISOString();
+      const inserted = this.#db.prepare(`
+        INSERT INTO app_users(email,password_hash,password_salt,role,created_at) VALUES(?,?,?,?,?)
+      `).run(invitation.email, passwordHash.toString('hex'), salt.toString('hex'), invitation.role, createdAt);
+      const userId = Number(inserted.lastInsertRowid);
+      this.#db.prepare('UPDATE app_user_invitations SET accepted_at=? WHERE id=? AND accepted_at IS NULL').run(now, invitation.id);
+      this.#db.prepare("INSERT INTO app_user_invitation_audit(invitation_id,actor_id,event,occurred_at) VALUES(?,?,'accepted',?)").run(invitation.id, invitation.invited_by, now);
+      this.#db.exec('COMMIT');
+      return { data: { id: userId, email: invitation.email, role: invitation.role, active: 1, createdAt } };
+    } catch (error) {
+      try { this.#db.exec('ROLLBACK'); } catch { /* preserve the original error */ }
+      if (/UNIQUE constraint failed: app_users\.email/u.test(error?.message ?? '')) return { error: 'INVITATION_ALREADY_USED' };
+      throw error;
+    }
   }
 
   updateUser(actor, key, userId, input = {}) {
