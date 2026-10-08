@@ -26,6 +26,8 @@ function fixture(options = {}) {
     listRevisions(...args) { calls.push(['listRevisions', ...args]); return []; },
     createContent(...args) { calls.push(['createContent', ...args]); return { id: 1 }; },
     updateContent(...args) { calls.push(['updateContent', ...args]); return { id: args[1] }; },
+    submitForReview(...args) { calls.push(['submitForReview', ...args]); return { id: args[1] }; },
+    returnForChanges(...args) { calls.push(['returnForChanges', ...args]); return { id: args[1] }; },
     publishContent(...args) { calls.push(['publishContent', ...args]); return { id: args[1] }; },
     archiveContent(...args) { calls.push(['archiveContent', ...args]); return { id: args[1] }; },
   };
@@ -107,7 +109,9 @@ test('command schemas and status/version references are strict', async () => {
   assert.equal((await f.request('POST', '/api/content/commands/update', { id: null, version: 1, content })).status, 400);
   assert.equal((await f.request('POST', '/api/content/commands/publish', { id: 1, version: 0 })).status, 400);
   assert.equal((await f.request('POST', '/api/content/commands/archive', { id: 1, version: 1, role: 'admin' })).status, 400);
-  assert.equal(f.calls.length, 0);
+  assert.equal((await f.request('POST', '/api/content/commands/submit-review', { id: 1, version: 1 })).status, 200);
+  assert.equal((await f.request('POST', '/api/content/commands/return-for-changes', { id: 1, version: 1 })).status, 200);
+  assert.deepEqual(f.calls.map((call) => call[0]), ['submitForReview', 'returnForChanges']);
 });
 
 test('body size, JSON type and malformed payloads are rejected before service invocation', async () => {
@@ -163,8 +167,10 @@ test('real adapter and SQLite service complete a draft-review-publish-public-rea
   const created = await send('POST', '/api/content/commands/create', { content }, 'real-create-001');
   assert.equal(created.status, 200);
   assert.equal((await send('GET', '/api/content/public/over-ons')).status, 404);
+  const submitted = await send('POST', '/api/content/commands/submit-review', { id: created.body.data.id, version: created.body.data.version }, 'real-review-001');
+  assert.equal(submitted.status, 200);
   actor = { id: 4, role: 'publisher' };
-  const published = await send('POST', '/api/content/commands/publish', { id: created.body.data.id, version: 1 }, 'real-publish-001');
+  const published = await send('POST', '/api/content/commands/publish', { id: created.body.data.id, version: submitted.body.data.version }, 'real-publish-001');
   assert.equal(published.status, 200);
   const publicPage = await send('GET', '/api/content/public/over-ons');
   assert.equal(publicPage.status, 200);

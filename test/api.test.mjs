@@ -11,6 +11,8 @@ import { fileURLToPath } from 'node:url';
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const adminEmail = 'cms-api-test@example.test';
 const adminPassword = 'test-only-password-with-24-chars';
+const publisherEmail = 'publisher-api-test@example.test';
+const publisherPassword = 'publisher-test-password-with-24c';
 const technicianEmail = 'technician-api-test@example.test';
 const technicianPassword = 'technician-test-password-24c';
 let tempRoot;
@@ -169,11 +171,29 @@ test('authenticated REST APIs complete a CMS and service ERP workflow', async ()
   });
   assert.equal(createdContent.response.status, 200, JSON.stringify(createdContent.payload));
   assert.equal(createdContent.payload.data.status, 'draft');
-  const published = await request('/api/content/commands/publish', {
+  const submittedContent = await request('/api/content/commands/submit-review', {
     cookie: admin.cookie,
     csrf: admin.csrf,
     method: 'POST',
     body: { id: createdContent.payload.data.id, version: createdContent.payload.data.version },
+    idempotencyKey: 'cms-api-review-001',
+  });
+  assert.equal(submittedContent.response.status, 200);
+  assert.equal(submittedContent.payload.data.reviewStatus, 'pending');
+  const publisherAccount = await request('/api/users', {
+    cookie: admin.cookie,
+    csrf: admin.csrf,
+    method: 'POST',
+    body: { email: publisherEmail, password: publisherPassword, role: 'publisher' },
+    idempotencyKey: 'cms-api-publisher-1',
+  });
+  assert.equal(publisherAccount.response.status, 201);
+  const publisher = await login(publisherEmail, publisherPassword);
+  const published = await request('/api/content/commands/publish', {
+    cookie: publisher.cookie,
+    csrf: publisher.csrf,
+    method: 'POST',
+    body: { id: createdContent.payload.data.id, version: submittedContent.payload.data.version },
     idempotencyKey: 'cms-api-publish-001',
   });
   assert.equal(published.response.status, 200);

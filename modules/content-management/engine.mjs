@@ -166,6 +166,49 @@ export function renderPublicContent(value) {
   return `<article data-content-type="${escapeHtml(model.type)}"><header><h1>${escapeHtml(model.title)}</h1>${model.summary ? `<p>${escapeHtml(model.summary)}</p>` : ''}</header><div>${blocks}</div></article>`;
 }
 
+function migrateReviewWorkflow(db) {
+  db.exec('PRAGMA foreign_keys = OFF');
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const columns = new Set(db.prepare('PRAGMA table_info(cms_content)').all().map((column) => column.name));
+    if (!columns.has('review_status')) {
+      db.exec("ALTER TABLE cms_content ADD COLUMN review_status TEXT NOT NULL DEFAULT 'none' CHECK(review_status IN ('none','pending','changes_requested'))");
+    }
+    if (!columns.has('submitted_by')) db.exec('ALTER TABLE cms_content ADD COLUMN submitted_by TEXT');
+    if (!columns.has('submitted_at')) db.exec('ALTER TABLE cms_content ADD COLUMN submitted_at TEXT');
+
+    const revisionSchema = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='cms_revisions'").get()?.sql ?? '';
+    if (!revisionSchema.includes("'submitted_for_review'")) {
+      db.exec(`DROP TABLE IF EXISTS cms_revisions_rebuild;
+        CREATE TABLE cms_revisions_rebuild (
+          id INTEGER PRIMARY KEY,
+          content_id INTEGER NOT NULL REFERENCES cms_content(id),
+          version INTEGER NOT NULL CHECK(version > 0),
+          action TEXT NOT NULL CHECK(action IN ('created','edited','submitted_for_review','returned_for_changes','published','archived')),
+          actor_id TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          snapshot_json TEXT NOT NULL CHECK(json_valid(snapshot_json)),
+          UNIQUE(content_id, version)
+        );
+        INSERT INTO cms_revisions_rebuild(id,content_id,version,action,actor_id,created_at,snapshot_json)
+          SELECT id,content_id,version,action,actor_id,created_at,snapshot_json FROM cms_revisions;
+        DROP TABLE cms_revisions;
+        ALTER TABLE cms_revisions_rebuild RENAME TO cms_revisions;`);
+    }
+    db.exec(`CREATE INDEX IF NOT EXISTS cms_content_review ON cms_content(review_status, updated_at DESC, id DESC);
+      CREATE TRIGGER IF NOT EXISTS cms_revisions_no_update
+        BEFORE UPDATE ON cms_revisions BEGIN SELECT RAISE(ABORT,'immutable content revisions'); END;
+      CREATE TRIGGER IF NOT EXISTS cms_revisions_no_delete
+        BEFORE DELETE ON cms_revisions BEGIN SELECT RAISE(ABORT,'immutable content revisions'); END;`);
+    db.exec('COMMIT');
+  } catch (error) {
+    try { db.exec('ROLLBACK'); } catch { /* preserve the migration error */ }
+    throw error;
+  } finally {
+    db.exec('PRAGMA foreign_keys = ON');
+  }
+}
+
 export class ContentService {
   #db;
   #now;
@@ -175,6 +218,7 @@ export class ContentService {
     if (typeof now !== 'function') throw new TypeError('clock');
     this.#db = new DatabaseSync(path);
     this.#db.exec(readFileSync(new URL('./schema.sql', import.meta.url), 'utf8'));
+    migrateReviewWorkflow(this.#db);
     this.#now = now;
   }
 
@@ -217,6 +261,9 @@ export class ContentService {
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       publishedAt: row.published_at,
+      reviewStatus: row.review_status,
+      submittedAt: row.submitted_at,
+      submittedBy: row.submitted_by,
       hasUnpublishedChanges: row.status === 'published' && row.working_json !== row.published_json,
       content,
     };
@@ -298,10 +345,57 @@ export class ContentService {
       const publishedJson = nextStatus === 'published' ? row.published_json : null;
       const publishedAt = nextStatus === 'published' ? row.published_at : null;
       this.#db.prepare(
-        `UPDATE cms_content SET content_type=?,slug=?,status=?,version=?,working_json=?,published_json=?,updated_at=?,published_at=? WHERE id=? AND version=?`,
+        `UPDATE cms_content SET content_type=?,slug=?,status=?,version=?,working_json=?,published_json=?,updated_at=?,published_at=?,review_status='none',submitted_by=NULL,submitted_at=NULL WHERE id=? AND version=?`,
       ).run(content.type, content.slug, nextStatus, nextVersion, JSON.stringify(content), publishedJson, now, publishedAt, id, version);
       this.#revision(id, nextVersion, 'edited', writer.id, now, content);
       this.#audit(id, nextVersion, 'edited', writer.id, now);
+      return this.#managed(this.#row(id));
+    });
+  }
+
+  submitForReview(actorValue, idValue, versionValue, key) {
+    const actor = this.#requireRole(actorValue, ['admin', 'editor']);
+    const id = positiveInteger(idValue, 'id');
+    const version = positiveInteger(versionValue, 'version');
+    return this.#write(actor, 'submit-review', { id, version }, key, (writer) => {
+      const row = this.#row(id);
+      if (!row) throw new ContentError('NOT_FOUND', 'content not found');
+      if (!this.#canEdit(writer, row)) throw new ContentError('NOT_FOUND', 'content not found');
+      if (row.version !== version) throw new ContentError('CONFLICT', 'version conflict');
+      if (row.status === 'archived') throw new ContentError('CONFLICT', 'archived content must be restored by an editor first');
+      if (row.review_status === 'pending') throw new ContentError('CONFLICT', 'content is already awaiting review');
+      if (row.status === 'published' && row.working_json === row.published_json) {
+        throw new ContentError('CONFLICT', 'content has no unpublished changes to review');
+      }
+      const now = this.#now();
+      const nextVersion = row.version + 1;
+      const snapshot = JSON.parse(row.working_json);
+      this.#db.prepare(
+        `UPDATE cms_content SET review_status='pending',submitted_by=?,submitted_at=?,version=?,updated_at=? WHERE id=? AND version=?`,
+      ).run(writer.id, now, nextVersion, now, id, version);
+      this.#revision(id, nextVersion, 'submitted_for_review', writer.id, now, snapshot);
+      this.#audit(id, nextVersion, 'submitted_for_review', writer.id, now);
+      return this.#managed(this.#row(id));
+    });
+  }
+
+  returnForChanges(actorValue, idValue, versionValue, key) {
+    const actor = this.#requireRole(actorValue, ['admin', 'publisher']);
+    const id = positiveInteger(idValue, 'id');
+    const version = positiveInteger(versionValue, 'version');
+    return this.#write(actor, 'return-for-changes', { id, version }, key, (reviewer) => {
+      const row = this.#row(id);
+      if (!row) throw new ContentError('NOT_FOUND', 'content not found');
+      if (row.version !== version) throw new ContentError('CONFLICT', 'version conflict');
+      if (row.review_status !== 'pending') throw new ContentError('CONFLICT', 'content is not awaiting review');
+      const now = this.#now();
+      const nextVersion = row.version + 1;
+      const snapshot = JSON.parse(row.working_json);
+      this.#db.prepare(
+        `UPDATE cms_content SET review_status='changes_requested',submitted_by=NULL,submitted_at=NULL,version=?,updated_at=? WHERE id=? AND version=?`,
+      ).run(nextVersion, now, id, version);
+      this.#revision(id, nextVersion, 'returned_for_changes', reviewer.id, now, snapshot);
+      this.#audit(id, nextVersion, 'returned_for_changes', reviewer.id, now);
       return this.#managed(this.#row(id));
     });
   }
@@ -315,11 +409,12 @@ export class ContentService {
       if (!row) throw new ContentError('NOT_FOUND', 'content not found');
       if (row.status === 'archived') throw new ContentError('CONFLICT', 'archived content must be restored by an editor first');
       if (row.version !== version) throw new ContentError('CONFLICT', 'version conflict');
+      if (row.review_status !== 'pending') throw new ContentError('CONFLICT', 'content must be submitted for review before publication');
       const now = this.#now();
       const nextVersion = row.version + 1;
       const working = validateContent(JSON.parse(row.working_json));
       this.#db.prepare(
-        `UPDATE cms_content SET status='published',version=?,published_slug=slug,published_json=working_json,updated_at=?,published_at=? WHERE id=? AND version=?`,
+        `UPDATE cms_content SET status='published',review_status='none',submitted_by=NULL,submitted_at=NULL,version=?,published_slug=slug,published_json=working_json,updated_at=?,published_at=? WHERE id=? AND version=?`,
       ).run(nextVersion, now, now, id, version);
       this.#revision(id, nextVersion, 'published', publisher.id, now, working);
       this.#audit(id, nextVersion, 'published', publisher.id, now);
@@ -340,7 +435,7 @@ export class ContentService {
       const nextVersion = row.version + 1;
       const snapshot = JSON.parse(row.working_json);
       this.#db.prepare(
-        `UPDATE cms_content SET status='archived',version=?,published_slug=NULL,published_json=NULL,updated_at=?,published_at=NULL WHERE id=? AND version=?`,
+        `UPDATE cms_content SET status='archived',review_status='none',submitted_by=NULL,submitted_at=NULL,version=?,published_slug=NULL,published_json=NULL,updated_at=?,published_at=NULL WHERE id=? AND version=?`,
       ).run(nextVersion, now, id, version);
       this.#revision(id, nextVersion, 'archived', publisher.id, now, snapshot);
       this.#audit(id, nextVersion, 'archived', publisher.id, now);

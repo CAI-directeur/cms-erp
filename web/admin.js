@@ -116,6 +116,7 @@ function setContentForm(item) {
   contentForm.elements.seoDescription.value = item?.content?.seoDescription ?? '';
   contentForm.elements.body.value = item?.content?.blocks?.map((block) => block.text ?? block.items?.join('\n') ?? '').join('\n\n') ?? '';
   byId('content-form-title').textContent = item ? `Content bewerken · #${item.id}` : 'Concept maken';
+  contentForm.querySelector('button[type="submit"]').textContent = item ? 'Wijzigingen opslaan' : 'Concept opslaan';
 }
 
 function contentPayload(data) {
@@ -139,7 +140,8 @@ function contentRow(item) {
   const title = document.createElement('strong');
   title.textContent = item.content.title;
   const meta = document.createElement('p');
-  meta.textContent = `${item.type} · /${item.slug} · ${item.status} · v${item.version}`;
+  const reviewLabels = { none: 'geen open review', pending: 'wacht op eigenaarreview', changes_requested: 'aanpassingen gevraagd' };
+  meta.textContent = `${item.type} · /${item.slug} · ${item.status} · ${reviewLabels[item.reviewStatus] ?? 'reviewstatus onbekend'} · v${item.version}`;
   details.append(title, meta);
   const actions = document.createElement('div');
   actions.className = 'record-actions';
@@ -149,11 +151,23 @@ function contentRow(item) {
     edit.addEventListener('click', () => { setContentForm(item); contentForm.scrollIntoView({ behavior: 'smooth', block: 'start' }); });
     actions.append(edit);
   }
-  if (['admin', 'publisher'].includes(session.actor.role) && item.status !== 'archived') {
+  if (['admin', 'editor'].includes(session.actor.role) && item.status !== 'archived' &&
+      item.reviewStatus !== 'pending' && (item.status !== 'published' || item.hasUnpublishedChanges)) {
+    const submit = document.createElement('button');
+    submit.type = 'button'; submit.className = 'button-secondary'; submit.textContent = 'Ter beoordeling aanbieden';
+    submit.addEventListener('click', () => contentAction('submit-review', item));
+    actions.append(submit);
+  }
+  if (['admin', 'publisher'].includes(session.actor.role) && item.reviewStatus === 'pending') {
     const publish = document.createElement('button');
-    publish.type = 'button'; publish.textContent = 'Publiceren';
+    publish.type = 'button'; publish.textContent = 'Goedkeuren en publiceren';
     publish.addEventListener('click', () => contentAction('publish', item));
-    actions.append(publish);
+    const returnButton = document.createElement('button');
+    returnButton.type = 'button'; returnButton.className = 'button-danger'; returnButton.textContent = 'Terug voor aanpassing';
+    returnButton.addEventListener('click', () => contentAction('return-for-changes', item));
+    actions.append(publish, returnButton);
+  }
+  if (['admin', 'publisher'].includes(session.actor.role) && item.status !== 'archived') {
     const archive = document.createElement('button');
     archive.type = 'button'; archive.className = 'button-danger'; archive.textContent = 'Archiveren';
     archive.addEventListener('click', () => contentAction('archive', item));
@@ -176,7 +190,13 @@ async function contentAction(action, item) {
   const target = byId('content-message');
   try {
     await postIntent(`/api/content/commands/${action}`, { id: item.id, version: item.version });
-    message(target, action === 'publish' ? 'Content gepubliceerd.' : 'Content gearchiveerd.');
+    const messages = {
+      publish: 'Content goedgekeurd en gepubliceerd.',
+      archive: 'Content gearchiveerd.',
+      'submit-review': 'Content aangeboden voor eigenaarreview.',
+      'return-for-changes': 'Content teruggestuurd voor aanpassing.',
+    };
+    message(target, messages[action] ?? 'Content bijgewerkt.');
     await loadContent();
   } catch (error) { message(target, errorText('Actie niet uitgevoerd', error), true); }
 }
@@ -192,7 +212,7 @@ contentForm.addEventListener('submit', async (event) => {
     await postIntent(`/api/content/commands/${editing ? 'update' : 'create'}`,
       editing ? { id: Number(data.id), version: Number(data.version), content } : { content });
     setContentForm();
-    message(target, 'Concept opgeslagen.');
+    message(target, editing ? 'Wijzigingen opgeslagen.' : 'Concept opgeslagen.');
     await loadContent();
   } catch (error) { message(target, errorText('Niet opgeslagen', error), true); }
 });
@@ -583,7 +603,7 @@ function applyRoleVisibility() {
   document.querySelectorAll('[data-roles]').forEach((element) => {
     element.hidden = !element.dataset.roles.split(',').includes(role);
   });
-  byId('content').hidden = !['admin', 'editor', 'publisher', 'reader'].includes(role);
+  byId('content').hidden = !['admin', 'editor', 'publisher'].includes(role);
   if (!['admin', 'editor'].includes(role)) {
     contentForm.hidden = true;
     byId('new-content').hidden = true;

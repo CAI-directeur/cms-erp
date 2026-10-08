@@ -47,9 +47,10 @@ production; this local CMS/ERP repository has not been connected or deployed.
 - Keep the Site's existing session identity as the source of authorization.
   Do not trust a client-supplied actor ID, role header or email when connecting
   the Node modules.
-- Keep the existing owner-review stage and published snapshot. The Node CMS
-  currently models draft, published and archived states; add an explicit review
-  transition or a verified Site adapter before connecting its write commands.
+- Keep the existing owner-review stage and published snapshot. The local Node
+  CMS now models submit-for-review, return-for-changes and publisher approval;
+  a Site adapter must still map the Site's verified owner role and revision
+  fields before connecting its write commands.
 - Map existing Site content types to the Node schema explicitly. The Node CMS
   supports page, article, service, project and FAQ using closed content blocks;
   it does not import arbitrary HTML or silently overwrite existing content.

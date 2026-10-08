@@ -24,16 +24,19 @@ Conflicting slugs and stale versions return a `ContentError` with code
 `CONFLICT`. Content can be read with `getManaged`/`listManaged`; immutable
 snapshots are returned by `listRevisions`.
 
-| Role | Create | Edit | Publish/archive | Read management data |
+| Role | Create/edit | Submit for review | Approve/publish/archive | Read management data |
 | --- | --- | --- | --- | --- |
-| `admin` | Any | Any | Yes | All |
-| `editor` | Yes | Own drafts | No | Own content and revisions |
+| `admin` | Any | Yes | Yes | All |
+| `editor` | Own content | Own content | No | Own content and revisions |
 | `publisher` | No | No | Yes | All |
 | `reader` | No | No | No | No |
 
 An edit to published content keeps its prior published snapshot public until a
-publisher approves the new version. Archiving removes it from public lookup.
-Editors can update archived content to restore it as a draft.
+publisher approves the new version. Editors/admins must submit the current
+version for review; publishers/admins may publish only a pending review or
+return it for changes. Updating returned content clears the review request and
+requires resubmission. Archiving removes it from public lookup. Editors can
+update archived content to restore it as a draft.
 
 Allowed content fields are `type`, `title`, `slug`, `summary`, `blocks`,
 `seoTitle` and `seoDescription`. Slugs are lowercase ASCII segments joined by
@@ -66,7 +69,9 @@ handler. It returns `false` for unrelated paths and handles paths under
 | `GET /api/content/items/:id/revisions` | Authenticated | Revision history |
 | `POST /api/content/commands/create` | Authenticated, CSRF | Create draft |
 | `POST /api/content/commands/update` | Authenticated, CSRF | Edit draft/work version |
-| `POST /api/content/commands/publish` | Authenticated, CSRF | Publish current version |
+| `POST /api/content/commands/submit-review` | Authenticated, CSRF | Submit current version for owner review |
+| `POST /api/content/commands/return-for-changes` | Authenticated, CSRF | Return pending review to the author |
+| `POST /api/content/commands/publish` | Authenticated, CSRF | Approve and publish a pending version |
 | `POST /api/content/commands/archive` | Authenticated, CSRF | Archive item |
 
 Every command requires JSON and an `Idempotency-Key` header. The adapter checks

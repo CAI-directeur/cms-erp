@@ -2,6 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { OperationsService } from '../service-operations/engine.mjs';
@@ -74,9 +75,16 @@ test('editor drafts become public only after publisher approval; public model ex
   const cms = setup(t);
   const draft = cms.createContent(editor, article(), 'create-article-01');
   assert.equal(draft.status, 'draft');
+  assert.equal(draft.reviewStatus, 'none');
   assert.equal(cms.getPublished(draft.slug), null);
-  const live = cms.publishContent(publisher, draft.id, draft.version, 'publish-article-01');
+  assert.throws(() => cms.publishContent(publisher, draft.id, draft.version, 'publish-without-review'), /submitted for review/);
+  const submitted = cms.submitForReview(editor, draft.id, draft.version, 'submit-article-01');
+  assert.equal(submitted.reviewStatus, 'pending');
+  assert.equal(submitted.submittedBy, String(editor.id));
+  assert.equal(cms.getPublished(draft.slug), null);
+  const live = cms.publishContent(publisher, draft.id, submitted.version, 'publish-article-01');
   assert.equal(live.status, 'published');
+  assert.equal(live.reviewStatus, 'none');
   const published = cms.getPublished(draft.slug);
   assert.equal(published.title, 'Installatie & onderhoud');
   assert.deepEqual(Object.keys(published).sort(), [
@@ -84,7 +92,30 @@ test('editor drafts become public only after publisher approval; public model ex
   ].sort());
   assert.equal(Object.hasOwn(published, 'createdBy'), false);
   assert.equal(Object.hasOwn(published, 'version'), false);
-  assert.equal(cms.listRevisions(admin, draft.id).length, 2);
+  assert.equal(cms.listRevisions(admin, draft.id).length, 3);
+});
+
+test('review can be returned, corrected and resubmitted without exposing draft content', (t) => {
+  const cms = setup(t);
+  const draft = cms.createContent(editor, article(), 'create-review-001');
+  const submitted = cms.submitForReview(editor, draft.id, draft.version, 'submit-review-001');
+  const replay = cms.submitForReview(editor, draft.id, draft.version, 'submit-review-001');
+  assert.equal(replay.version, submitted.version);
+  assert.equal(cms.getPublished(draft.slug), null);
+  assert.throws(() => cms.returnForChanges(editor, draft.id, submitted.version, 'return-review-denied'), /not authorized/);
+  const returned = cms.returnForChanges(publisher, draft.id, submitted.version, 'return-review-001');
+  assert.equal(returned.reviewStatus, 'changes_requested');
+  assert.equal(cms.getPublished(draft.slug), null);
+  const corrected = cms.updateContent(editor, draft.id, article({ title: 'Aangepaste uitleg' }), returned.version, 'edit-review-001');
+  assert.equal(corrected.reviewStatus, 'none');
+  const resubmitted = cms.submitForReview(editor, draft.id, corrected.version, 'submit-review-002');
+  assert.equal(resubmitted.reviewStatus, 'pending');
+  const live = cms.publishContent(publisher, draft.id, resubmitted.version, 'publish-review-001');
+  assert.equal(live.reviewStatus, 'none');
+  assert.equal(cms.getPublished(draft.slug).title, 'Aangepaste uitleg');
+  assert.deepEqual(cms.listRevisions(admin, draft.id).map((revision) => revision.action), [
+    'published', 'submitted_for_review', 'edited', 'returned_for_changes', 'submitted_for_review', 'created',
+  ]);
 });
 
 test('public rendering validates a closed model and escapes all text', () => {
@@ -108,7 +139,8 @@ test('public rendering validates a closed model and escapes all text', () => {
 test('editing a published item preserves the previous live snapshot until republished', (t) => {
   const cms = setup(t);
   const created = cms.createContent(editor, article(), 'create-live-001');
-  const live = cms.publishContent(admin, created.id, created.version, 'publish-live-001');
+  const firstReview = cms.submitForReview(editor, created.id, created.version, 'submit-live-001');
+  const live = cms.publishContent(admin, created.id, firstReview.version, 'publish-live-001');
   const edited = cms.updateContent(
     editor,
     live.id,
@@ -120,7 +152,10 @@ test('editing a published item preserves the previous live snapshot until republ
   assert.equal(edited.hasUnpublishedChanges, true);
   assert.equal(cms.getPublished('installatie-onderhoud').title, 'Installatie & onderhoud');
   assert.equal(cms.getPublished('onderhoud-update'), null);
-  const updatedLive = cms.publishContent(publisher, edited.id, edited.version, 'publish-live-002');
+  const updateReview = cms.submitForReview(editor, edited.id, edited.version, 'submit-live-002');
+  assert.equal(updateReview.reviewStatus, 'pending');
+  assert.equal(cms.getPublished('installatie-onderhoud').title, 'Installatie & onderhoud');
+  const updatedLive = cms.publishContent(publisher, edited.id, updateReview.version, 'publish-live-002');
   assert.equal(updatedLive.hasUnpublishedChanges, false);
   assert.equal(cms.getPublished('installatie-onderhoud'), null);
   assert.equal(cms.getPublished('onderhoud-update').title, 'Bijgewerkte titel');
@@ -129,10 +164,12 @@ test('editing a published item preserves the previous live snapshot until republ
 test('a live slug stays reserved until the new version is published', (t) => {
   const cms = setup(t);
   const created = cms.createContent(editor, article(), 'create-reserve-01');
-  const live = cms.publishContent(admin, created.id, created.version, 'publish-reserve-01');
+  const firstReview = cms.submitForReview(editor, created.id, created.version, 'submit-reserve-01');
+  const live = cms.publishContent(admin, created.id, firstReview.version, 'publish-reserve-01');
   const edited = cms.updateContent(editor, live.id, article({ slug: 'new-slug' }), live.version, 'edit-reserve-01');
   const replacement = cms.createContent(editor, article({ type: 'page', slug: 'installatie-onderhoud' }), 'create-replace-01');
-  assert.throws(() => cms.publishContent(admin, replacement.id, replacement.version, 'publish-replace-01'), /slug already exists/);
+  const replacementReview = cms.submitForReview(editor, replacement.id, replacement.version, 'submit-replace-01');
+  assert.throws(() => cms.publishContent(admin, replacement.id, replacementReview.version, 'publish-replace-01'), /slug already exists/);
   assert.equal(cms.getPublished('installatie-onderhoud').title, 'Installatie & onderhoud');
   assert.equal(cms.getManaged(editor, edited.id).hasUnpublishedChanges, true);
 });
@@ -151,7 +188,8 @@ test('readers see published content but cannot see drafts or revisions', (t) => 
   const draft = cms.createContent(editor, article(), 'create-reader-001');
   assert.deepEqual(cms.listPublished(), []);
   assert.throws(() => cms.getManaged(reader, draft.id), /not authorized/);
-  const live = cms.publishContent(publisher, draft.id, draft.version, 'publish-reader-01');
+  const submitted = cms.submitForReview(editor, draft.id, draft.version, 'submit-reader-01');
+  const live = cms.publishContent(publisher, draft.id, submitted.version, 'publish-reader-01');
   assert.equal(cms.listPublished({ type: 'article' })[0].id, live.id);
   assert.equal(cms.getPublished(draft.slug).id, live.id);
 });
@@ -172,7 +210,8 @@ test('version checks reject stale writes and idempotency prevents duplicate revi
 test('archiving removes public visibility and an authorized edit restores a draft', (t) => {
   const cms = setup(t);
   const draft = cms.createContent(editor, article(), 'create-archive-1');
-  const live = cms.publishContent(admin, draft.id, draft.version, 'publish-archive-1');
+  const submitted = cms.submitForReview(editor, draft.id, draft.version, 'submit-archive-1');
+  const live = cms.publishContent(admin, draft.id, submitted.version, 'publish-archive-1');
   const archived = cms.archiveContent(publisher, live.id, live.version, 'archive-live-001');
   assert.equal(archived.status, 'archived');
   assert.equal(cms.getPublished(draft.slug), null);
@@ -215,4 +254,54 @@ test('CMS and ERP schemas coexist in one private SQLite database', (t) => {
   const page = cms.createContent(editor, article({ type: 'page', slug: 'home' }), 'cms-create-home-01');
   assert.equal(erp.get(admin, 'customers', customer.id).name, 'Voorbeeld');
   assert.equal(cms.getManaged(editor, page.id).slug, 'home');
+});
+
+test('review migration preserves legacy content and immutable revisions', (t) => {
+  const directory = mkdtempSync(join(tmpdir(), 'cms-review-migration-'));
+  const path = join(directory, 'legacy.sqlite');
+  const legacy = new DatabaseSync(path);
+  const snapshot = JSON.stringify(article());
+  legacy.exec(`
+    CREATE TABLE cms_content (
+      id INTEGER PRIMARY KEY,
+      content_type TEXT NOT NULL CHECK(content_type IN ('page','article','service','project','faq')),
+      slug TEXT NOT NULL UNIQUE,
+      published_slug TEXT UNIQUE,
+      status TEXT NOT NULL CHECK(status IN ('draft','published','archived')),
+      version INTEGER NOT NULL CHECK(version > 0),
+      created_by TEXT NOT NULL,
+      working_json TEXT NOT NULL CHECK(json_valid(working_json)),
+      published_json TEXT CHECK(published_json IS NULL OR json_valid(published_json)),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      published_at TEXT,
+      CHECK((status='published' AND published_slug IS NOT NULL AND published_json IS NOT NULL AND published_at IS NOT NULL)
+        OR (status IN ('draft','archived') AND published_slug IS NULL AND published_json IS NULL AND published_at IS NULL))
+    );
+    CREATE TABLE cms_revisions (
+      id INTEGER PRIMARY KEY,
+      content_id INTEGER NOT NULL REFERENCES cms_content(id),
+      version INTEGER NOT NULL CHECK(version > 0),
+      action TEXT NOT NULL CHECK(action IN ('created','edited','published','archived')),
+      actor_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      snapshot_json TEXT NOT NULL CHECK(json_valid(snapshot_json)),
+      UNIQUE(content_id,version)
+    );
+  `);
+  legacy.prepare(`INSERT INTO cms_content(id,content_type,slug,status,version,created_by,working_json,created_at,updated_at)
+    VALUES(1,'article','installatie-onderhoud','draft',1,?,?,?,?)`).run(String(editor.id), snapshot, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z');
+  legacy.prepare(`INSERT INTO cms_revisions(content_id,version,action,actor_id,created_at,snapshot_json)
+    VALUES(1,1,'created',?,'2026-01-01T00:00:00.000Z',?)`).run(String(editor.id), snapshot);
+  legacy.close();
+
+  const cms = new ContentService(path);
+  t.after(() => { cms.close(); rmSync(directory, { recursive: true, force: true }); });
+  const migrated = cms.getManaged(editor, 1);
+  assert.equal(migrated.reviewStatus, 'none');
+  assert.equal(migrated.content.title, 'Installatie & onderhoud');
+  assert.equal(cms.listRevisions(admin, 1)[0].action, 'created');
+  const submitted = cms.submitForReview(editor, 1, migrated.version, 'migrate-review-001');
+  assert.equal(submitted.reviewStatus, 'pending');
+  assert.equal(cms.listRevisions(admin, 1)[0].action, 'submitted_for_review');
 });

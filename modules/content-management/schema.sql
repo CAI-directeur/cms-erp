@@ -16,6 +16,9 @@ CREATE TABLE IF NOT EXISTS cms_content (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   published_at TEXT,
+  review_status TEXT NOT NULL DEFAULT 'none' CHECK(review_status IN ('none','pending','changes_requested')),
+  submitted_by TEXT,
+  submitted_at TEXT,
   CHECK(
     (status = 'published' AND published_slug IS NOT NULL AND published_json IS NOT NULL AND published_at IS NOT NULL)
     OR (status IN ('draft','archived') AND published_slug IS NULL AND published_json IS NULL AND published_at IS NULL)
@@ -33,7 +36,7 @@ CREATE TABLE IF NOT EXISTS cms_revisions (
   id INTEGER PRIMARY KEY,
   content_id INTEGER NOT NULL REFERENCES cms_content(id),
   version INTEGER NOT NULL CHECK(version > 0),
-  action TEXT NOT NULL CHECK(action IN ('created','edited','published','archived')),
+  action TEXT NOT NULL CHECK(action IN ('created','edited','submitted_for_review','returned_for_changes','published','archived')),
   actor_id TEXT NOT NULL,
   created_at TEXT NOT NULL,
   snapshot_json TEXT NOT NULL CHECK(json_valid(snapshot_json)),

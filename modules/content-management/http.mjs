@@ -189,7 +189,7 @@ export function createContentHandler({
 
       if (url.search) throw new HttpError(400, 'QUERY_NOT_SUPPORTED');
       if (req.method !== 'POST' || parts.length !== 2 || parts[0] !== 'commands' ||
-          !['create', 'update', 'publish', 'archive'].includes(parts[1])) throw new HttpError(404, 'ROUTE_NOT_FOUND');
+          !['create', 'update', 'submit-review', 'return-for-changes', 'publish', 'archive'].includes(parts[1])) throw new HttpError(404, 'ROUTE_NOT_FOUND');
       if (req.headers.origin !== allowedOrigin || await verifyCsrf(req, actor) !== true) throw new HttpError(403, 'CSRF_REJECTED');
       const key = req.headers['idempotency-key'];
       if (typeof key !== 'string' || !/^[A-Za-z0-9._:-]{8,100}$/.test(key)) throw new HttpError(400, 'IDEMPOTENCY_KEY_REQUIRED');
@@ -204,6 +204,12 @@ export function createContentHandler({
       } else if (parts[1] === 'publish') {
         shape(input, ['id', 'version']);
         result = service.publishContent(actor, integer(input.id), integer(input.version), key);
+      } else if (parts[1] === 'submit-review') {
+        shape(input, ['id', 'version']);
+        result = service.submitForReview(actor, integer(input.id), integer(input.version), key);
+      } else if (parts[1] === 'return-for-changes') {
+        shape(input, ['id', 'version']);
+        result = service.returnForChanges(actor, integer(input.id), integer(input.version), key);
       } else {
         shape(input, ['id', 'version']);
         result = service.archiveContent(actor, integer(input.id), integer(input.version), key);

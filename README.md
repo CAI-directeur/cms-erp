@@ -25,7 +25,8 @@ product import planner.
 
 The repository also includes a Node host in `src/` and a browser management
 interface in `web/`. It provides first-run admin setup, session login, a CMS
-editor, public content pages, and operational screens for customers, resources,
+editor with owner review before publication, public content pages, and
+operational screens for customers, resources,
 products, quotes, work orders, scheduling, hours, stock reservations and
 movements, invoices, payments, credit notes and bookkeeping outbox exports.
 Resource assignment is limited to active technician accounts. Lists are
