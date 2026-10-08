@@ -62,6 +62,10 @@ been connected or deployed to either project.
   Only after successful REST acceptance and rollback checks should the same
   change be prepared for production. Do not replace existing routes or publish
   a second Site.
+- Keep the production board at `https://www.cai-techniek.nl/app/board` tied to
+  production evidence only. ACC and local test results belong in the technical
+  handoff; update a production card only after a real production release and
+  read-back confirm the live version and behavior.
 
 ## Verification status
 
