@@ -37,6 +37,13 @@ recovery, MFA, media uploads, production deployment automation, a live
 WordPress connector, provider delivery, and legally reviewed invoice layouts
 remain separate work.
 
+An optional ChatGPT MCP endpoint is being added at `/mcp`. It is disabled when
+Auth0 configuration is absent and fails closed on partial configuration. When
+enabled, it reuses the same CMS/ERP services and local account roles. See
+[`docs/MCP-AUTH0.md`](docs/MCP-AUTH0.md) for the configuration and current
+deployment boundaries. This code is not yet connected to the existing Site or
+published as a ChatGPT plugin.
+
 The existing CAI Business OS Site already has its own `/app/cms` interface,
 content collections and owner-review workflow. This host is not wired into that
 Site and must not be deployed over its homepage or CMS route. Read
@@ -84,5 +91,7 @@ node --test test/*.test.mjs integrations/wordpress-contract/*.test.mjs modules/c
 The API suite starts the local host with a temporary SQLite database and
 synthetic credentials; it does not connect to ACC, production or a live Site.
 
-There are no npm runtime dependencies. The host and modules are GPL-3.0-or-later;
-each component directory contains its detailed integration boundaries.
+The optional MCP endpoint uses the official MCP TypeScript server/node packages,
+`jose` for Auth0 JWT verification and `zod` for tool input schemas. The host and
+modules are GPL-3.0-or-later; each component directory contains its detailed
+integration boundaries.

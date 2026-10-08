@@ -9,6 +9,7 @@ import { ContentService, renderPublicContent } from '../modules/content-manageme
 import { createContentHandler } from '../modules/content-management/http.mjs';
 import { OperationsService } from '../modules/service-operations/engine.mjs';
 import { createOperationsHandler } from '../modules/service-operations/http.mjs';
+import { createMcpEndpoint } from './mcp-http.mjs';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const webRoot = resolve(projectRoot, 'web');
@@ -32,6 +33,7 @@ const auth = new AuthStore(dbPath);
 auth.bootstrapAdmin(process.env.CMS_ERP_BOOTSTRAP_EMAIL, process.env.CMS_ERP_BOOTSTRAP_PASSWORD);
 const content = new ContentService(dbPath);
 const operations = new OperationsService(dbPath, { businessTimezone: process.env.CMS_ERP_TIMEZONE ?? 'Europe/Amsterdam' });
+const mcpEndpoint = createMcpEndpoint({ auth, content, operations, origin: allowedOrigin });
 try { chmodSync(dbPath, 0o600); } catch { /* Windows ACLs control access on Windows. */ }
 
 const contentRoles = new Set(['admin', 'editor', 'publisher', 'reader']);
@@ -154,6 +156,7 @@ async function route(req, res) {
   if (url.origin !== allowedOrigin) return send(res, 400, 'Invalid origin');
 
   if (req.method === 'GET' && url.pathname === '/health') return json(res, 200, { status: 'ok' });
+  if (mcpEndpoint && await mcpEndpoint.handle(req, res)) return;
   if (req.method === 'GET' && url.pathname === '/assets/app.css') return asset(res, 'app.css', 'text/css; charset=utf-8');
   if (req.method === 'GET' && url.pathname === '/assets/admin.js') return asset(res, 'admin.js', 'text/javascript; charset=utf-8');
 
@@ -161,7 +164,7 @@ async function route(req, res) {
     const actor = auth.actor(req);
     const csrfToken = auth.csrfToken(req);
     if (!actor || !csrfToken) return json(res, 401, { error: 'AUTH_REQUIRED', requestId });
-    return json(res, 200, { data: { actor, csrfToken } });
+    return json(res, 200, { data: { actor, csrfToken, auth0McpEnabled: Boolean(mcpEndpoint) } });
   }
   if (req.method === 'POST' && url.pathname === '/api/auth/password') {
     const actor = auth.actor(req);
@@ -187,6 +190,24 @@ async function route(req, res) {
   if (url.pathname === '/api/users' && req.method === 'GET') {
     if (auth.actor(req)?.role !== 'admin') return json(res, 403, { error: 'FORBIDDEN', requestId });
     return json(res, 200, { data: auth.listUsers() });
+  }
+  const auth0LinkMatch = /^\/api\/users\/([1-9]\d*)\/auth0-link$/u.exec(url.pathname);
+  if (auth0LinkMatch && req.method === 'POST') {
+    if (!mcpEndpoint) return json(res, 503, { error: 'AUTH0_MCP_DISABLED', requestId });
+    const actor = auth.actor(req);
+    if (actor?.role !== 'admin') return json(res, 403, { error: 'FORBIDDEN', requestId });
+    if (req.headers.origin !== allowedOrigin || !auth.verifyCsrf(req, actor)) return json(res, 403, { error: 'CSRF_REJECTED', requestId });
+    const input = await readJson(req);
+    if (!input || Object.keys(input).some((key) => key !== 'code')) return json(res, 400, { error: 'INVALID_LINK_REQUEST', requestId });
+    const result = auth.createAuth0LinkChallenge(actor, req.headers['idempotency-key'], Number(auth0LinkMatch[1]), input.code);
+    if (result.error) {
+      const status = result.error === 'USER_NOT_FOUND' ? 404
+        : result.error === 'FORBIDDEN' ? 403
+          : ['IDENTITY_ALREADY_LINKED', 'IDEMPOTENCY_CONFLICT'].includes(result.error) ? 409
+            : 400;
+      return json(res, status, { error: result.error, requestId });
+    }
+    return json(res, 201, { data: result.data });
   }
   if (url.pathname === '/api/technicians' && req.method === 'GET') {
     const actor = auth.actor(req);
@@ -274,6 +295,7 @@ server.listen(portValue, listenHost, () => {
 
 function close() {
   server.close(() => {
+    void mcpEndpoint?.close().catch(() => {});
     content.close();
     operations.close();
     auth.close();

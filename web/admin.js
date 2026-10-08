@@ -695,6 +695,7 @@ function createUserPanel() {
   title.append(eyebrow, h2); heading.append(title);
   const note = document.createElement('p'); note.className = 'muted';
   note.textContent = 'Alleen admins kunnen accounts toevoegen. Gebruik voor elk account een uniek wachtwoord van minimaal 14 tekens.';
+  if (session.auth0McpEnabled) note.textContent += ' Auth0-koppelingen gebruiken een eenmalige code die na tien minuten verloopt.';
   const grid = document.createElement('div'); grid.className = 'content-grid';
   const form = document.createElement('form'); form.id = 'user-form'; form.className = 'form-grid';
   const formTitle = document.createElement('h3'); formTitle.textContent = 'Gebruiker toevoegen'; form.append(formTitle);
@@ -727,8 +728,30 @@ function createUserPanel() {
       const row = document.createElement('article'); row.className = 'record-card';
       const text = document.createElement('div');
       const email = document.createElement('strong'); email.textContent = user.email;
-      const role = document.createElement('p'); role.textContent = `${user.role} · ${user.active ? 'actief' : 'uitgeschakeld'}`;
-      text.append(email, role); row.append(text); list.append(row);
+      const role = document.createElement('p'); role.textContent = `${user.role} · ${user.active ? 'actief' : 'uitgeschakeld'} · Auth0 ${user.auth0Linked ? 'gekoppeld' : 'niet gekoppeld'}`;
+      text.append(email, role); row.append(text);
+      if (session.auth0McpEnabled && user.active && !user.auth0Linked) {
+        const actions = document.createElement('div'); actions.className = 'record-actions';
+        const link = document.createElement('button'); link.type = 'button'; link.className = 'button-secondary'; link.textContent = 'Auth0-koppeling starten';
+        const outcome = document.createElement('p'); outcome.className = 'muted'; outcome.setAttribute('role', 'status');
+        link.addEventListener('click', async () => {
+          link.disabled = true;
+          outcome.textContent = 'Tijdelijke koppelcode wordt aangemaakt…';
+          const code = crypto.randomUUID() + crypto.randomUUID();
+          try {
+            await request(`/api/users/${user.id}/auth0-link`, {
+              method: 'POST', headers: postHeaders(idempotencyKey()), body: JSON.stringify({ code }),
+            });
+            outcome.textContent = `Laat de gebruiker in ChatGPT de MCP-tool complete_account_link met deze eenmalige code gebruiken binnen tien minuten: ${code}`;
+            link.textContent = 'Nieuwe code maken';
+          } catch (error) {
+            outcome.textContent = `Koppeling niet gestart: ${error.message}`;
+            link.disabled = false;
+          }
+        });
+        actions.append(link, outcome); row.append(actions);
+      }
+      list.append(row);
     }
     if (!users.length) list.textContent = 'Geen accounts gevonden.';
   }

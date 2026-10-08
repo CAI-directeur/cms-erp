@@ -64,7 +64,9 @@ export class AuthStore {
         password_salt TEXT NOT NULL,
         role TEXT NOT NULL CHECK(role IN ('admin','editor','publisher','planner','technician','finance','reader')),
         active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),
-        created_at TEXT NOT NULL
+        created_at TEXT NOT NULL,
+        auth0_issuer TEXT,
+        auth0_subject TEXT
       );
       CREATE TABLE IF NOT EXISTS app_sessions (
         token_hash TEXT PRIMARY KEY,
@@ -79,6 +81,37 @@ export class AuthStore {
         fingerprint TEXT NOT NULL,
         user_id INTEGER NOT NULL REFERENCES app_users(id),
         PRIMARY KEY(actor_id,idem_key)
+      );
+    `);
+    const userColumns = new Set(this.#db.prepare('PRAGMA table_info(app_users)').all().map((column) => column.name));
+    if (!userColumns.has('auth0_issuer')) this.#db.exec('ALTER TABLE app_users ADD COLUMN auth0_issuer TEXT');
+    if (!userColumns.has('auth0_subject')) this.#db.exec('ALTER TABLE app_users ADD COLUMN auth0_subject TEXT');
+    this.#db.exec(`
+      CREATE UNIQUE INDEX IF NOT EXISTS app_users_auth0_identity
+        ON app_users(auth0_issuer,auth0_subject)
+        WHERE auth0_issuer IS NOT NULL AND auth0_subject IS NOT NULL;
+      CREATE TABLE IF NOT EXISTS app_identity_link_idempotency (
+        actor_id INTEGER NOT NULL REFERENCES app_users(id),
+        idem_key TEXT NOT NULL,
+        fingerprint TEXT NOT NULL,
+        user_id INTEGER NOT NULL REFERENCES app_users(id),
+        PRIMARY KEY(actor_id,idem_key)
+      );
+      CREATE TABLE IF NOT EXISTS app_identity_link_challenges (
+        code_hash TEXT PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES app_users(id),
+        created_by INTEGER NOT NULL REFERENCES app_users(id),
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        consumed_at INTEGER
+      );
+      CREATE TABLE IF NOT EXISTS app_identity_link_audit (
+        id INTEGER PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES app_users(id),
+        actor_id INTEGER NOT NULL REFERENCES app_users(id),
+        auth0_issuer TEXT NOT NULL,
+        auth0_subject TEXT NOT NULL,
+        created_at TEXT NOT NULL
       );
     `);
   }
@@ -173,7 +206,84 @@ export class AuthStore {
   }
 
   listUsers() {
-    return this.#db.prepare('SELECT id,email,role,active,created_at AS createdAt FROM app_users ORDER BY id').all();
+    return this.#db.prepare('SELECT id,email,role,active,created_at AS createdAt,(auth0_subject IS NOT NULL) AS auth0Linked FROM app_users ORDER BY id').all();
+  }
+
+  actorForExternalIdentity(issuer, subject) {
+    if (typeof issuer !== 'string' || typeof subject !== 'string' || !issuer || !subject ||
+        issuer.length > 512 || subject.length > 255 || /[\u0000-\u001f\u007f]/u.test(issuer + subject)) return null;
+    const user = this.#db.prepare(`
+      SELECT id,email,role FROM app_users
+      WHERE auth0_issuer=? AND auth0_subject=? AND active=1
+    `).get(issuer, subject);
+    return user ? { id: user.id, email: user.email, role: user.role } : null;
+  }
+
+  createAuth0LinkChallenge(actor, key, userId, code) {
+    if (actor?.role !== 'admin' || !Number.isSafeInteger(actor.id) || actor.id < 1) return { error: 'FORBIDDEN' };
+    if (!Number.isSafeInteger(userId) || userId < 1 || typeof code !== 'string' || !/^[A-Za-z0-9._~-]{32,100}$/u.test(code)) return { error: 'INVALID_LINK_REQUEST' };
+    if (typeof key !== 'string' || !/^[A-Za-z0-9._:-]{8,100}$/u.test(key)) return { error: 'IDEMPOTENCY_KEY_REQUIRED' };
+    const codeHash = createHash('sha256').update(code, 'utf8').digest('hex');
+    const fingerprint = createHash('sha256').update(JSON.stringify({ userId, codeHash }), 'utf8').digest('hex');
+    this.#db.exec('BEGIN IMMEDIATE');
+    try {
+      const prior = this.#db.prepare('SELECT fingerprint,user_id FROM app_identity_link_idempotency WHERE actor_id=? AND idem_key=?').get(actor.id, key);
+      if (prior) {
+        const challenge = prior.fingerprint === fingerprint
+          ? this.#db.prepare('SELECT expires_at,consumed_at FROM app_identity_link_challenges WHERE code_hash=?').get(codeHash)
+          : null;
+        this.#db.exec('COMMIT');
+        if (prior.fingerprint !== fingerprint) return { error: 'IDEMPOTENCY_CONFLICT' };
+        if (!challenge || challenge.consumed_at !== null || challenge.expires_at <= Date.now()) return { error: 'LINK_CHALLENGE_EXPIRED' };
+        return { data: { userId: prior.user_id, challengeCreated: true, expiresAt: challenge.expires_at } };
+      }
+      const user = this.#db.prepare('SELECT id,active,auth0_issuer,auth0_subject FROM app_users WHERE id=?').get(userId);
+      if (!user) { this.#db.exec('ROLLBACK'); return { error: 'USER_NOT_FOUND' }; }
+      if (!user.active) { this.#db.exec('ROLLBACK'); return { error: 'USER_INACTIVE' }; }
+      if (user.auth0_issuer || user.auth0_subject) {
+        this.#db.exec('ROLLBACK');
+        return { error: 'IDENTITY_ALREADY_LINKED' };
+      }
+      const now = Date.now();
+      this.#db.prepare('UPDATE app_identity_link_challenges SET consumed_at=? WHERE user_id=? AND consumed_at IS NULL').run(now, userId);
+      this.#db.prepare('INSERT INTO app_identity_link_challenges(code_hash,user_id,created_by,created_at,expires_at) VALUES(?,?,?,?,?)').run(codeHash, userId, actor.id, now, now + 10 * 60 * 1000);
+      this.#db.prepare('INSERT INTO app_identity_link_idempotency(actor_id,idem_key,fingerprint,user_id) VALUES(?,?,?,?)').run(actor.id, key, fingerprint, userId);
+      this.#db.exec('COMMIT');
+      return { data: { userId, challengeCreated: true, expiresAt: now + 10 * 60 * 1000 } };
+    } catch (error) {
+      try { this.#db.exec('ROLLBACK'); } catch { /* preserve the original error */ }
+      throw error;
+    }
+  }
+
+  completeAuth0IdentityLink(issuer, subject, code) {
+    if (typeof issuer !== 'string' || !/^https:\/\/[^/]+\/$/u.test(issuer) || issuer.length > 512 ||
+        typeof subject !== 'string' || !/^[^\u0000-\u0020\u007f]{1,255}$/u.test(subject) ||
+        typeof code !== 'string' || !/^[A-Za-z0-9._~-]{32,100}$/u.test(code)) return { error: 'INVALID_LINK_REQUEST' };
+    const codeHash = createHash('sha256').update(code, 'utf8').digest('hex');
+    const now = Date.now();
+    this.#db.exec('BEGIN IMMEDIATE');
+    try {
+      const challenge = this.#db.prepare('SELECT user_id,created_by,expires_at,consumed_at FROM app_identity_link_challenges WHERE code_hash=?').get(codeHash);
+      if (!challenge || challenge.consumed_at !== null || challenge.expires_at <= now) {
+        this.#db.exec('ROLLBACK');
+        return { error: 'LINK_CHALLENGE_INVALID' };
+      }
+      const user = this.#db.prepare('SELECT id,role,active,auth0_issuer,auth0_subject FROM app_users WHERE id=?').get(challenge.user_id);
+      if (!user || !user.active || user.auth0_issuer || user.auth0_subject) {
+        this.#db.exec('ROLLBACK');
+        return { error: 'IDENTITY_ALREADY_LINKED' };
+      }
+      this.#db.prepare('UPDATE app_users SET auth0_issuer=?,auth0_subject=? WHERE id=? AND auth0_issuer IS NULL AND auth0_subject IS NULL').run(issuer, subject, user.id);
+      this.#db.prepare('UPDATE app_identity_link_challenges SET consumed_at=? WHERE code_hash=? AND consumed_at IS NULL').run(now, codeHash);
+      this.#db.prepare('INSERT INTO app_identity_link_audit(user_id,actor_id,auth0_issuer,auth0_subject,created_at) VALUES(?,?,?,?,?)').run(user.id, challenge.created_by, issuer, subject, new Date(now).toISOString());
+      this.#db.exec('COMMIT');
+      return { data: { userId: user.id, linked: true, role: user.role } };
+    } catch (error) {
+      try { this.#db.exec('ROLLBACK'); } catch { /* preserve the original error */ }
+      if (/UNIQUE constraint failed: app_users\.auth0_issuer, app_users\.auth0_subject/u.test(error?.message ?? '')) return { error: 'IDENTITY_IN_USE' };
+      throw error;
+    }
   }
 
   listActiveTechnicians() {
