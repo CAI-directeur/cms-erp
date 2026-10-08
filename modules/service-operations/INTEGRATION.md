@@ -50,7 +50,7 @@ Statuswijziging: `{id, status, version}`. Werkorder uit offerte: `{quoteId, sche
 4. Toegewezen medewerker → uren; toon status- en toegangsconflicten zonder oude gegevens stilzwijgend te overschrijven.
 5. Finance → factuur uit bron → openstaand bedrag → deelbetaling → eventuele creditnota → lokale boekhoudexport/outbox.
 
-Geen van deze UI-stromen is door alleen de module geïmplementeerd. Browseracceptatie op de uiteindelijke app blijft een aparte stap.
+Geen van deze UI-stromen is door alleen de module geïmplementeerd. De lokale Node-host heeft inmiddels formulieren voor deze hoofdprocessen, maar is niet aangesloten op de bestaande Site en er is nog geen browseracceptatie op de uiteindelijke app uitgevoerd.
 
 ## Boekhouding en externe providers
 

@@ -23,13 +23,18 @@ product import planner.
   WooCommerce product snapshot planner. The host fetches data and reviews the
   plan; this module has no credentials, network access or write operations.
 
-The repository now also includes a small Node host in `src/` and a browser
-management interface in `web/`. It provides first-run admin setup, session
-login, a basic CMS editor, public content pages, ERP lists and starter forms for
-customers, products and quotes. The host is single-organization and does not
-yet include multi-tenant administration, media uploads, a complete workflow UI,
-production deployment automation or a live WordPress connector. External
-provider integrations and legally reviewed invoice layouts remain separate.
+The repository also includes a Node host in `src/` and a browser management
+interface in `web/`. It provides first-run admin setup, session login, a CMS
+editor, public content pages, and operational screens for customers, resources,
+products, quotes, work orders, scheduling, hours, stock reservations and
+movements, invoices, payments, credit notes and bookkeeping outbox exports.
+Resource assignment is limited to active technician accounts. Lists are
+paginated and writes use stable idempotency keys for retryable requests.
+
+The host is still single-organization. Multi-tenant administration, account
+recovery, MFA, media uploads, production deployment automation, a live
+WordPress connector, provider delivery, and legally reviewed invoice layouts
+remain separate work.
 
 The existing CAI Business OS Site already has its own `/app/cms` interface,
 content collections and owner-review workflow. This host is not wired into that

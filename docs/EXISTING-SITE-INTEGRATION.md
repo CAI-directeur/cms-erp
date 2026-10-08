@@ -10,10 +10,11 @@ new draft does not replace the current public version. The Site also contains
 CRM, properties, catalog, quotes, workorders, planning, execution, integrations,
 reports, customer access, privacy, governance and audit modules.
 
-The Site owner task checked the Site and ACC directly through the native Sites
-tools and read the ACC source. The following versions and route behavior are
-observations from that read-only check; this local CMS/ERP repository has not
-been connected or deployed to either project.
+Work checked Site metadata and cloned/read the active DEV v11 and production
+v49 source commits through the Sites source workflow. ACC metadata was read, but
+its source was not available in that task. The route and authentication
+observations below come from matching files inspected in current DEV and
+production; this local CMS/ERP repository has not been connected or deployed.
 
 ## Confirmed Site and API state
 
@@ -23,6 +24,9 @@ been connected or deployed to either project.
   `https://test.cai-techniek-nl.chatgpt.site`.
 - Production was version 49 from commit
   `5317bfcd41d06990a245f2d33e52bc6cbf63d124`.
+- DEV v11 and production v49 have divergent Git histories, but the inspected
+  login, portal, CMS and API files have matching contents. ACC v4's source was
+  not inspected.
 - The existing CMS screen uses `GET /api/os?view=cms` and `POST /api/os` for
   internal drafts, owner approval, and records. The separate `/api/editorial`
   route handles public articles, cases, and pages through draft, review,

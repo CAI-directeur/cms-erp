@@ -176,6 +176,19 @@ export class AuthStore {
     return this.#db.prepare('SELECT id,email,role,active,created_at AS createdAt FROM app_users ORDER BY id').all();
   }
 
+  listActiveTechnicians() {
+    return this.#db.prepare(
+      "SELECT id,email FROM app_users WHERE role='technician' AND active=1 ORDER BY id",
+    ).all();
+  }
+
+  isActiveTechnician(id) {
+    if (!Number.isSafeInteger(id) || id < 1) return false;
+    return Boolean(this.#db.prepare(
+      "SELECT 1 FROM app_users WHERE id=? AND role='technician' AND active=1",
+    ).get(id));
+  }
+
   createUser(actor, key, { email: emailValue, password, role } = {}) {
     const email = normalizedEmail(emailValue);
     if (!email || typeof password !== 'string' || password.length < 14 || password.length > 1024 || !roles.has(role)) {

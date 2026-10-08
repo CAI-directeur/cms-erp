@@ -63,8 +63,8 @@ async function readJson(req,maxBytes,timeoutMs) {
   });
 }
 
-export function createOperationsHandler({service,resolveActor,verifyCsrf,allowedOrigin,maxBytes=262144,bodyTimeoutMs=5000,requestsPerMinute=120,onError=()=>{}}) {
-  if (!service || typeof resolveActor!=='function' || typeof verifyCsrf!=='function') throw new TypeError('service, resolveActor and verifyCsrf are required');
+export function createOperationsHandler({service,resolveActor,verifyCsrf,authorizeCommand=async()=>true,allowedOrigin,maxBytes=262144,bodyTimeoutMs=5000,requestsPerMinute=120,onError=()=>{}}) {
+  if (!service || typeof resolveActor!=='function' || typeof verifyCsrf!=='function' || typeof authorizeCommand!=='function') throw new TypeError('service, resolveActor, verifyCsrf and authorizeCommand are required');
   const origin=new URL(allowedOrigin);
   if (origin.protocol!=='https:' && !(origin.protocol==='http:' && ['localhost','127.0.0.1','[::1]'].includes(origin.hostname))) throw new TypeError('HTTPS origin required');
   if (origin.username || origin.password || origin.origin!==allowedOrigin) throw new TypeError('Use an exact origin without a path or credentials');
@@ -100,6 +100,7 @@ export function createOperationsHandler({service,resolveActor,verifyCsrf,allowed
       const key=req.headers['idempotency-key'];
       if (typeof key!=='string' || !/^[A-Za-z0-9._:-]{8,100}$/.test(key)) throw new HttpError(400,'IDEMPOTENCY_KEY_REQUIRED');
       const input=await readJson(req,maxBytes,bodyTimeoutMs);
+      if (await authorizeCommand({req,actor,command:parts[1],input})!==true) throw new HttpError(403,'COMMAND_NOT_AUTHORIZED');
       const [method,kind]=commands[parts[1]];
       let result;
       if (kind==='status') {shape(input,['id','status','version']);result=service[method](actor,integer(input.id),input.status,integer(input.version),key);}

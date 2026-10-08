@@ -138,6 +138,9 @@ test('authenticated REST APIs complete a CMS and service ERP workflow', async ()
   const adminPage = await request('/admin', { cookie: admin.cookie });
   assert.equal(adminPage.response.status, 200);
   assert.match(adminPage.response.headers.get('content-security-policy'), /default-src 'self'/u);
+  assert.match(adminPage.payload, /ERP-werkstromen/u);
+  assert.match(adminPage.payload, /id="inventory-form"/u);
+  assert.match(adminPage.payload, /id="credit-form"/u);
 
   const content = {
     type: 'page',
@@ -190,6 +193,17 @@ test('authenticated REST APIs complete a CMS and service ERP workflow', async ()
   assert.equal(technicianCreated.response.status, 201);
   const technicianId = technicianCreated.payload.data.id;
   assert.equal(Object.hasOwn(technicianCreated.payload.data, 'password_hash'), false);
+  const technicians = await request('/api/technicians', { cookie: admin.cookie });
+  assert.equal(technicians.response.status, 200);
+  assert.deepEqual(technicians.payload.data, [{ id: technicianId, email: technicianEmail }]);
+  const technicianSession = await login(technicianEmail, technicianPassword);
+  const hiddenTechnicianDirectory = await request('/api/technicians', { cookie: technicianSession.cookie });
+  assert.equal(hiddenTechnicianDirectory.response.status, 403);
+  const unknownTechnician = await command(admin, 'create-resource', {
+    name: 'Onbekende monteur', technicianId: technicianId + 1000,
+  }, 'cms-api-resource-denied');
+  assert.equal(unknownTechnician.response.status, 403);
+  assert.equal(unknownTechnician.payload.error, 'COMMAND_NOT_AUTHORIZED');
 
   const customer = await command(admin, 'create-customer', { name: 'Synthetische testklant', type: 'b2b' }, 'cms-api-customer-01');
   assert.equal(customer.response.status, 200);
