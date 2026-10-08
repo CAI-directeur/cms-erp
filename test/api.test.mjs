@@ -8,6 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { after, before, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { createTotpSecret, totpCode } from '../src/totp.mjs';
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const adminEmail = 'cms-api-test@example.test';
@@ -51,13 +52,18 @@ async function request(pathname, { cookie, csrf, method = 'GET', body, idempoten
   return { response, payload };
 }
 
-async function login(email, password) {
+async function loginAttempt(email, password, mfaCode = '') {
   const response = await fetch(new URL('/login', origin), {
     method: 'POST',
     headers: { Origin: origin, 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ email, password }),
+    body: new URLSearchParams({ email, password, mfaCode }),
     redirect: 'manual',
   });
+  return response;
+}
+
+async function login(email, password, mfaCode = '') {
+  const response = await loginAttempt(email, password, mfaCode);
   assert.equal(response.status, 303, `login failed; server output: ${output}`);
   const cookie = response.headers.get('set-cookie')?.split(';', 1)[0];
   assert.ok(cookie?.startsWith('cms_erp_session='), 'session cookie missing');
@@ -96,6 +102,7 @@ before(async () => {
       CMS_ERP_DATABASE: path.join(tempRoot, 'cms-test.sqlite'),
       CMS_ERP_BOOTSTRAP_EMAIL: adminEmail,
       CMS_ERP_BOOTSTRAP_PASSWORD: adminPassword,
+      CMS_ERP_MFA_ENCRYPTION_KEY: '6f'.repeat(32),
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -418,4 +425,56 @@ test('authenticated REST APIs complete a CMS and service ERP workflow', async ()
   assert.equal(oldPasswordLogin.status, 401);
   const newPasswordSession = await login(adminEmail, passwordPayload.newPassword);
   assert.equal(newPasswordSession.actor.role, 'admin');
+
+  const mfaState = await request('/api/auth/mfa', { cookie: rotatedCookie });
+  assert.equal(mfaState.response.status, 200);
+  assert.deepEqual(mfaState.payload.data, { enabled: false, encryptionConfigured: true });
+  const mfaNoCsrf = await request('/api/auth/mfa/enroll', {
+    cookie: rotatedCookie, method: 'POST', body: { currentPassword: passwordPayload.newPassword },
+  });
+  assert.equal(mfaNoCsrf.response.status, 403);
+  const mfaWrongPassword = await request('/api/auth/mfa/enroll', {
+    cookie: rotatedCookie, csrf: passwordChanged.payload.data.csrfToken, method: 'POST',
+    body: { currentPassword: 'incorrect-current-password' },
+  });
+  assert.equal(mfaWrongPassword.response.status, 400);
+  const mfaEnrollment = await request('/api/auth/mfa/enroll', {
+    cookie: rotatedCookie, csrf: passwordChanged.payload.data.csrfToken, method: 'POST',
+    body: { currentPassword: passwordPayload.newPassword },
+  });
+  assert.equal(mfaEnrollment.response.status, 200);
+  assert.match(mfaEnrollment.payload.data.otpauthUrl, /^otpauth:\/\/totp\//u);
+  const mfaInvalidConfirm = await request('/api/auth/mfa/confirm', {
+    cookie: rotatedCookie, csrf: passwordChanged.payload.data.csrfToken, method: 'POST', body: { code: 'bad' },
+  });
+  assert.equal(mfaInvalidConfirm.response.status, 400);
+  const enrollmentCode = totpCode(mfaEnrollment.payload.data.secret, Date.now());
+  const mfaConfirmed = await request('/api/auth/mfa/confirm', {
+    cookie: rotatedCookie, csrf: passwordChanged.payload.data.csrfToken, method: 'POST', body: { code: enrollmentCode },
+  });
+  assert.equal(mfaConfirmed.response.status, 200);
+  assert.equal(mfaConfirmed.payload.data.enabled, true);
+  assert.equal(mfaConfirmed.payload.data.recoveryCodes.length, 10);
+  assert.equal(new Set(mfaConfirmed.payload.data.recoveryCodes).size, 10);
+  assert.equal((await request('/api/auth/mfa', { cookie: rotatedCookie })).payload.data.enabled, true);
+
+  assert.equal((await loginAttempt(adminEmail, passwordPayload.newPassword)).status, 401);
+  assert.equal((await loginAttempt(adminEmail, passwordPayload.newPassword, '000000')).status, 401);
+  // Confirmation consumes the current time step; use the next (accepted-skew) step for login.
+  const validMfaCode = totpCode(mfaEnrollment.payload.data.secret, Date.now() + 30_000);
+  const mfaSession = await login(adminEmail, passwordPayload.newPassword, validMfaCode);
+  assert.equal(mfaSession.actor.role, 'admin');
+  assert.equal((await loginAttempt(adminEmail, passwordPayload.newPassword, validMfaCode)).status, 401);
+  const recoveryLogin = await login(adminEmail, passwordPayload.newPassword, mfaConfirmed.payload.data.recoveryCodes[0]);
+  assert.equal(recoveryLogin.actor.role, 'admin');
+  assert.equal((await loginAttempt(adminEmail, passwordPayload.newPassword, mfaConfirmed.payload.data.recoveryCodes[0])).status, 401);
+
+  const mfaDisabled = await request('/api/auth/mfa/disable', {
+    cookie: rotatedCookie, csrf: passwordChanged.payload.data.csrfToken, method: 'POST',
+    body: { currentPassword: passwordPayload.newPassword, code: mfaConfirmed.payload.data.recoveryCodes[1] },
+  });
+  assert.equal(mfaDisabled.response.status, 200);
+  assert.deepEqual(mfaDisabled.payload.data, { enabled: false });
+  assert.equal((await request('/api/auth/mfa', { cookie: rotatedCookie })).payload.data.enabled, false);
+  assert.equal((await login(adminEmail, passwordPayload.newPassword)).actor.role, 'admin');
 });

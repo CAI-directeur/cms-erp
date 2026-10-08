@@ -32,8 +32,9 @@ movements, invoices, payments, credit notes and bookkeeping outbox exports.
 Resource assignment is limited to active technician accounts. Lists are
 paginated and writes use stable idempotency keys for retryable requests.
 
-The host is still single-organization. Multi-tenant administration, MFA, media
-uploads, production deployment automation, a live WordPress connector, provider
+The host is still single-organization. Optional authenticator-app MFA is
+implemented for local accounts. Multi-tenant administration, media uploads,
+production deployment automation, a live WordPress connector, provider
 delivery, and legally reviewed invoice layouts remain separate work.
 
 An optional ChatGPT MCP endpoint is implemented at `/mcp`. It is disabled when
@@ -86,8 +87,17 @@ both
 Reset links are single-use, expire after 30 minutes, and invalidate existing
 sessions. If mail delivery is not configured, the recovery endpoint stays
 unavailable internally and still returns a generic confirmation without
-issuing a token. MFA, tenant isolation and a complete team administration flow
-are not implemented yet.
+issuing a token. Users can optionally enroll authenticator-app MFA from account
+settings. Enrollment requires the current password and confirmation of a
+time-based code; login then requires a fresh code or one of ten single-use
+recovery codes. Recovery codes are shown once. Configure
+`CMS_ERP_MFA_ENCRYPTION_KEY` only in the private runtime as 32 random bytes
+encoded in 64 hexadecimal characters. Back up that key with the private
+database: startup fails closed if MFA-enabled accounts exist and the key is
+missing. The authenticator secret is encrypted at rest with AES-256-GCM. The
+key is separate from `AUTH0_*`, which configures the optional MCP resource
+server. Tenant isolation and a complete team invitation flow are not
+implemented yet.
 
 ## Verify the modules
 

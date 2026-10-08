@@ -665,7 +665,44 @@ function createPasswordPanel() {
   addPassword('confirmPassword', 'Nieuw wachtwoord herhalen', 'new-password');
   const submit = document.createElement('button'); submit.type = 'submit'; submit.textContent = 'Wachtwoord opslaan';
   const feedback = document.createElement('p'); feedback.className = 'message'; feedback.setAttribute('role', 'status');
-  form.append(submit, feedback); section.append(note, form); byId('content').before(section);
+  form.append(submit, feedback);
+  const mfaSection = document.createElement('div'); mfaSection.className = 'form-grid';
+  const mfaHeading = document.createElement('h3'); mfaHeading.textContent = 'Tweestapsverificatie';
+  const mfaStatus = document.createElement('p'); mfaStatus.className = 'muted'; mfaStatus.setAttribute('role', 'status');
+  const mfaFeedback = document.createElement('p'); mfaFeedback.className = 'message'; mfaFeedback.setAttribute('role', 'status');
+  const enrollmentForm = document.createElement('form'); enrollmentForm.className = 'form-grid';
+  const enrollmentPasswordLabel = document.createElement('label'); enrollmentPasswordLabel.append(document.createTextNode('Huidig wachtwoord om MFA in te schakelen'));
+  const enrollmentPassword = document.createElement('input'); enrollmentPassword.type = 'password'; enrollmentPassword.name = 'currentPassword'; enrollmentPassword.autocomplete = 'current-password'; enrollmentPassword.required = true; enrollmentPassword.maxLength = 1024;
+  enrollmentPasswordLabel.append(enrollmentPassword);
+  const enrollmentButton = document.createElement('button'); enrollmentButton.type = 'submit'; enrollmentButton.textContent = 'MFA instellen';
+  enrollmentForm.append(enrollmentPasswordLabel, enrollmentButton);
+  const setupDetails = document.createElement('div'); setupDetails.hidden = true;
+  const secretLabel = document.createElement('p'); secretLabel.textContent = 'Voer deze sleutel handmatig in bij je authenticator-app:';
+  const secretValue = document.createElement('code');
+  const uriLabel = document.createElement('p'); uriLabel.textContent = 'Authenticator-URI:';
+  const uriValue = document.createElement('code');
+  setupDetails.append(secretLabel, secretValue, uriLabel, uriValue);
+  const confirmForm = document.createElement('form'); confirmForm.className = 'form-grid'; confirmForm.hidden = true;
+  const confirmLabel = document.createElement('label'); confirmLabel.append(document.createTextNode('Zescijferige verificatiecode'));
+  const confirmCode = document.createElement('input'); confirmCode.name = 'code'; confirmCode.type = 'text'; confirmCode.inputMode = 'numeric'; confirmCode.autocomplete = 'one-time-code'; confirmCode.pattern = '[0-9]{6}'; confirmCode.maxLength = 6; confirmCode.required = true;
+  confirmLabel.append(confirmCode);
+  const confirmButton = document.createElement('button'); confirmButton.type = 'submit'; confirmButton.textContent = 'MFA bevestigen';
+  confirmForm.append(confirmLabel, confirmButton);
+  const recoveryPanel = document.createElement('div'); recoveryPanel.hidden = true;
+  const recoveryNote = document.createElement('p'); recoveryNote.textContent = 'Bewaar deze herstelcodes nu op een veilige plek. Elke code is één keer te gebruiken.';
+  const recoveryCodes = document.createElement('pre'); recoveryCodes.className = 'record-card';
+  recoveryPanel.append(recoveryNote, recoveryCodes);
+  const disableForm = document.createElement('form'); disableForm.className = 'form-grid'; disableForm.hidden = true;
+  const disablePasswordLabel = document.createElement('label'); disablePasswordLabel.append(document.createTextNode('Huidig wachtwoord'));
+  const disablePassword = document.createElement('input'); disablePassword.name = 'currentPassword'; disablePassword.type = 'password'; disablePassword.autocomplete = 'current-password'; disablePassword.maxLength = 1024; disablePassword.required = true;
+  disablePasswordLabel.append(disablePassword);
+  const disableCodeLabel = document.createElement('label'); disableCodeLabel.append(document.createTextNode('Authenticator- of herstelcode'));
+  const disableCode = document.createElement('input'); disableCode.name = 'code'; disableCode.type = 'text'; disableCode.autocomplete = 'one-time-code'; disableCode.maxLength = 128; disableCode.required = true;
+  disableCodeLabel.append(disableCode);
+  const disableButton = document.createElement('button'); disableButton.type = 'submit'; disableButton.className = 'button-secondary'; disableButton.textContent = 'MFA uitschakelen';
+  disableForm.append(disablePasswordLabel, disableCodeLabel, disableButton);
+  mfaSection.append(mfaHeading, mfaStatus, mfaFeedback, enrollmentForm, setupDetails, confirmForm, recoveryPanel, disableForm);
+  section.append(note, form, mfaSection); byId('content').before(section);
   const navLink = document.createElement('a'); navLink.href = '#security'; navLink.textContent = 'Beveiliging';
   document.querySelector('.topbar nav').append(navLink);
   form.addEventListener('submit', async (event) => {
@@ -683,6 +720,68 @@ function createPasswordPanel() {
       message(feedback, 'Wachtwoord bijgewerkt. Andere sessies zijn afgemeld.');
     } catch (error) { message(feedback, `Niet bijgewerkt: ${error.message}`, true); }
   });
+  async function refreshMfaStatus() {
+    try {
+      const state = await request('/api/auth/mfa');
+      mfaStatus.textContent = state.enabled ? 'MFA is ingeschakeld. Inloggen vereist je authenticator- of herstelcode.' : 'MFA is uitgeschakeld.';
+      enrollmentForm.hidden = state.enabled || !state.encryptionConfigured;
+      disableForm.hidden = !state.enabled;
+      if (!state.enabled && state.encryptionConfigured) enrollmentButton.disabled = false;
+      if (!state.encryptionConfigured) mfaFeedback.textContent = 'MFA is nog niet beschikbaar. De beheerder moet CMS_ERP_MFA_ENCRYPTION_KEY privé configureren.';
+    } catch (error) { message(mfaStatus, `MFA-status niet geladen: ${error.message}`, true); }
+  }
+  enrollmentForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    enrollmentButton.disabled = true;
+    try {
+      const pending = await request('/api/auth/mfa/enroll', {
+        method: 'POST', headers: postHeaders(), body: JSON.stringify({ currentPassword: enrollmentPassword.value }),
+      });
+      secretValue.textContent = pending.secret;
+      uriValue.textContent = pending.otpauthUrl;
+      confirmCode.value = '';
+      confirmButton.disabled = false;
+      recoveryPanel.hidden = true;
+      setupDetails.hidden = false; confirmForm.hidden = false;
+      enrollmentForm.hidden = true; enrollmentPassword.value = '';
+      message(mfaFeedback, 'Sleutel aangemaakt. Bevestig de instelling met de actuele code uit je authenticator-app.');
+    } catch (error) {
+      message(mfaFeedback, `MFA instellen mislukt: ${error.message}`, true);
+      enrollmentButton.disabled = false;
+    }
+  });
+  confirmForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    confirmButton.disabled = true;
+    try {
+      const result = await request('/api/auth/mfa/confirm', {
+        method: 'POST', headers: postHeaders(), body: JSON.stringify({ code: confirmCode.value }),
+      });
+      recoveryCodes.textContent = result.recoveryCodes.join('\n');
+      recoveryPanel.hidden = false; confirmForm.hidden = true; setupDetails.hidden = true;
+      message(mfaFeedback, 'MFA is ingeschakeld. De herstelcodes worden alleen nu getoond.');
+      await refreshMfaStatus();
+    } catch (error) {
+      message(mfaFeedback, `MFA bevestigen mislukt: ${error.message}`, true);
+      confirmButton.disabled = false;
+    }
+  });
+  disableForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    disableButton.disabled = true;
+    try {
+      await request('/api/auth/mfa/disable', {
+        method: 'POST', headers: postHeaders(),
+        body: JSON.stringify({ currentPassword: disablePassword.value, code: disableCode.value }),
+      });
+      disableForm.reset(); recoveryPanel.hidden = true;
+      message(mfaFeedback, 'MFA uitgeschakeld; andere sessies zijn afgemeld.');
+      await refreshMfaStatus();
+    } catch (error) {
+      message(mfaFeedback, `MFA uitschakelen mislukt: ${error.message}`, true);
+    } finally { disableButton.disabled = false; }
+  });
+  void refreshMfaStatus();
 }
 
 function createUserPanel() {

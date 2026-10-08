@@ -30,7 +30,7 @@ if (relativeToWeb === '' || (!relativeToWeb.startsWith(`..${sep}`) && relativeTo
 }
 mkdirSync(dirname(dbPath), { recursive: true, mode: 0o700 });
 
-const auth = new AuthStore(dbPath);
+const auth = new AuthStore(dbPath, { mfaEncryptionKey: process.env.CMS_ERP_MFA_ENCRYPTION_KEY ?? '' });
 auth.bootstrapAdmin(process.env.CMS_ERP_BOOTSTRAP_EMAIL, process.env.CMS_ERP_BOOTSTRAP_PASSWORD);
 const resendApiKey = process.env.RESEND_API_KEY ?? '';
 const resendFromEmail = process.env.RESEND_FROM_EMAIL ?? '';
@@ -64,7 +64,7 @@ const handleOperations = createOperationsHandler({
   onError: ({ requestId }) => console.error(JSON.stringify({ event: 'operations_request_error', requestId })),
 });
 
-const loginHtml = `<!doctype html><html lang="nl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Inloggen · CMS/ERP</title><link rel="stylesheet" href="/assets/app.css"></head><body class="login-page"><main class="login-card"><p class="eyebrow">CMS · ERP</p><h1>Inloggen</h1><p>Gebruik het account dat voor deze installatie is ingesteld.</p><form method="post" action="/login"><label>E-mailadres<input name="email" type="email" autocomplete="username" maxlength="254" required></label><label>Wachtwoord<input name="password" type="password" autocomplete="current-password" maxlength="1024" required></label><button type="submit">Inloggen</button><p class="form-error" role="alert">{{ERROR}}</p></form><p><a href="/password-reset">Wachtwoord vergeten?</a></p></main></body></html>`;
+const loginHtml = `<!doctype html><html lang="nl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Inloggen · CMS/ERP</title><link rel="stylesheet" href="/assets/app.css"></head><body class="login-page"><main class="login-card"><p class="eyebrow">CMS · ERP</p><h1>Inloggen</h1><p>Gebruik het account dat voor deze installatie is ingesteld.</p><form method="post" action="/login"><label>E-mailadres<input name="email" type="email" autocomplete="username" maxlength="254" required></label><label>Wachtwoord<input name="password" type="password" autocomplete="current-password" maxlength="1024" required></label><label>Verificatie- of herstelcode (indien ingeschakeld)<input name="mfaCode" type="text" autocomplete="one-time-code" maxlength="128"></label><button type="submit">Inloggen</button><p class="form-error" role="alert">{{ERROR}}</p></form><p><a href="/password-reset">Wachtwoord vergeten?</a></p></main></body></html>`;
 const passwordResetHtml = `<!doctype html><html lang="nl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Wachtwoord herstellen · CMS/ERP</title><link rel="stylesheet" href="/assets/app.css"><script src="/assets/password-reset.js" defer></script></head><body class="login-page"><main class="login-card"><p class="eyebrow">CMS · ERP</p><h1>Wachtwoord herstellen</h1><p id="reset-intro">Vraag een beveiligde herstellink aan voor je account.</p><form id="request-reset"><label>E-mailadres<input name="email" type="email" autocomplete="email" maxlength="254" required></label><button type="submit">Verstuur herstellink</button></form><form id="complete-reset" hidden><label>Nieuw wachtwoord<input name="password" type="password" autocomplete="new-password" minlength="14" maxlength="1024" required></label><label>Herhaal nieuw wachtwoord<input name="confirm" type="password" autocomplete="new-password" minlength="14" maxlength="1024" required></label><button type="submit">Wachtwoord opslaan</button></form><p id="reset-feedback" class="form-error" role="status" aria-live="polite"></p><p><a href="/login">Terug naar inloggen</a></p></main></body></html>`;
 const adminHtml = readFileSync(resolve(webRoot, 'admin.html'), 'utf8');
 
@@ -158,6 +158,14 @@ function failedLogin(req) {
   else entry.count += 1;
 }
 
+function mfaRateLimited(req, actor, operation) {
+  return !auth.consumeRateLimits([
+    { key: `mfa:${operation}:global`, limit: 1000, windowMs: 60 * 60 * 1000 },
+    { key: `mfa:${operation}:user:${actor.id}`, limit: 10, windowMs: 15 * 60 * 1000 },
+    { key: `mfa:${operation}:ip:${req.socket.remoteAddress ?? 'unknown'}`, limit: 50, windowMs: 60 * 60 * 1000 },
+  ]);
+}
+
 async function route(req, res) {
   const requestId = randomUUID();
   const host = req.headers.host;
@@ -224,6 +232,59 @@ async function route(req, res) {
     const csrfToken = auth.csrfToken(req);
     if (!actor || !csrfToken) return json(res, 401, { error: 'AUTH_REQUIRED', requestId });
     return json(res, 200, { data: { actor, csrfToken, auth0McpEnabled: Boolean(mcpEndpoint) } });
+  }
+  if (req.method === 'GET' && url.pathname === '/api/auth/mfa') {
+    const actor = auth.actor(req);
+    if (!actor) return json(res, 401, { error: 'AUTH_REQUIRED', requestId });
+    const result = auth.mfaStatus(req, actor);
+    return result.error ? json(res, 401, { error: result.error, requestId }) : json(res, 200, result);
+  }
+  if (req.method === 'POST' && url.pathname === '/api/auth/mfa/enroll') {
+    const actor = auth.actor(req);
+    if (!actor) return json(res, 401, { error: 'AUTH_REQUIRED', requestId });
+    if (req.headers.origin !== allowedOrigin || !auth.verifyCsrf(req, actor)) return json(res, 403, { error: 'CSRF_REJECTED', requestId });
+    const input = await readJson(req);
+    if (!input || Object.keys(input).some((key) => key !== 'currentPassword')) return json(res, 400, { error: 'INVALID_MFA_REQUEST', requestId });
+    if (mfaRateLimited(req, actor, 'enroll')) return json(res, 429, { error: 'MFA_RATE_LIMITED', requestId });
+    const result = auth.beginMfaEnrollment(req, actor, input.currentPassword);
+    if (result.error) {
+      const status = result.error === 'AUTH_REQUIRED' ? 401
+        : result.error === 'MFA_NOT_CONFIGURED' ? 503
+          : result.error === 'MFA_ALREADY_ENABLED' ? 409 : 400;
+      return json(res, status, { error: result.error, requestId });
+    }
+    return json(res, 200, result);
+  }
+  if (req.method === 'POST' && url.pathname === '/api/auth/mfa/confirm') {
+    const actor = auth.actor(req);
+    if (!actor) return json(res, 401, { error: 'AUTH_REQUIRED', requestId });
+    if (req.headers.origin !== allowedOrigin || !auth.verifyCsrf(req, actor)) return json(res, 403, { error: 'CSRF_REJECTED', requestId });
+    const input = await readJson(req);
+    if (!input || Object.keys(input).some((key) => key !== 'code')) return json(res, 400, { error: 'INVALID_MFA_REQUEST', requestId });
+    if (mfaRateLimited(req, actor, 'confirm')) return json(res, 429, { error: 'MFA_RATE_LIMITED', requestId });
+    const result = auth.confirmMfaEnrollment(req, actor, input.code);
+    if (result.error) {
+      const status = result.error === 'AUTH_REQUIRED' ? 401
+        : result.error === 'MFA_ALREADY_ENABLED' || result.error === 'MFA_ENROLLMENT_EXPIRED' ? 409
+          : result.error === 'MFA_NOT_CONFIGURED' ? 503 : 400;
+      return json(res, status, { error: result.error, requestId });
+    }
+    return json(res, 200, result);
+  }
+  if (req.method === 'POST' && url.pathname === '/api/auth/mfa/disable') {
+    const actor = auth.actor(req);
+    if (!actor) return json(res, 401, { error: 'AUTH_REQUIRED', requestId });
+    if (req.headers.origin !== allowedOrigin || !auth.verifyCsrf(req, actor)) return json(res, 403, { error: 'CSRF_REJECTED', requestId });
+    const input = await readJson(req);
+    if (!input || Object.keys(input).some((key) => !['currentPassword', 'code'].includes(key))) return json(res, 400, { error: 'INVALID_MFA_REQUEST', requestId });
+    if (mfaRateLimited(req, actor, 'disable')) return json(res, 429, { error: 'MFA_RATE_LIMITED', requestId });
+    const result = auth.disableMfa(req, actor, input.currentPassword, input.code);
+    if (result.error) {
+      const status = result.error === 'AUTH_REQUIRED' ? 401
+        : result.error === 'MFA_NOT_ENABLED' ? 409 : 400;
+      return json(res, status, { error: result.error, requestId });
+    }
+    return json(res, 200, result);
   }
   if (req.method === 'POST' && url.pathname === '/api/auth/password') {
     const actor = auth.actor(req);
@@ -317,7 +378,7 @@ async function route(req, res) {
     if (req.headers.origin !== allowedOrigin) return send(res, 403, loginHtml.replace('{{ERROR}}', 'Ongeldige aanmeldpoging.'));
     if (loginLimited(req)) return send(res, 429, loginHtml.replace('{{ERROR}}', 'Te veel pogingen. Probeer het later opnieuw.'));
     const form = await readForm(req);
-    const session = form && auth.authenticate(form.get('email'), form.get('password'));
+    const session = form && auth.authenticate(form.get('email'), form.get('password'), form.get('mfaCode') ?? '');
     if (!session) {
       failedLogin(req);
       return send(res, 401, loginHtml.replace('{{ERROR}}', 'E-mailadres of wachtwoord is onjuist.'));

@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import { DatabaseSync } from 'node:sqlite';
 import {
+  createCipheriv,
   createHash,
   createHmac,
+  createDecipheriv,
   randomBytes,
   scryptSync,
   timingSafeEqual,
 } from 'node:crypto';
+import { createTotpSecret, matchingTotpStep } from './totp.mjs';
 
 const cookieName = 'cms_erp_session';
 const sessionLifetimeMs = 8 * 60 * 60 * 1000;
@@ -52,8 +55,13 @@ export class AuthStore {
   #csrfSecret = randomBytes(32);
   #dummySalt = randomBytes(16);
   #dummyHash = scryptSync('invalid-password', this.#dummySalt, 64);
+  #mfaEncryptionKey;
 
-  constructor(databasePath) {
+  constructor(databasePath, { mfaEncryptionKey = process.env.CMS_ERP_MFA_ENCRYPTION_KEY ?? '' } = {}) {
+    if (mfaEncryptionKey && !/^[a-f0-9]{64}$/iu.test(mfaEncryptionKey)) {
+      throw new Error('CMS_ERP_MFA_ENCRYPTION_KEY must be 32 bytes encoded as 64 hexadecimal characters.');
+    }
+    this.#mfaEncryptionKey = mfaEncryptionKey ? Buffer.from(mfaEncryptionKey, 'hex') : null;
     this.#db = new DatabaseSync(databasePath);
     this.#db.exec(`
       PRAGMA foreign_keys=ON;
@@ -66,7 +74,10 @@ export class AuthStore {
         active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),
         created_at TEXT NOT NULL,
         auth0_issuer TEXT,
-        auth0_subject TEXT
+        auth0_subject TEXT,
+        mfa_enabled INTEGER NOT NULL DEFAULT 0 CHECK(mfa_enabled IN (0,1)),
+        mfa_secret_encrypted TEXT,
+        mfa_last_step INTEGER NOT NULL DEFAULT -1
       );
       CREATE TABLE IF NOT EXISTS app_sessions (
         token_hash TEXT PRIMARY KEY,
@@ -123,6 +134,28 @@ export class AuthStore {
         BEFORE UPDATE ON app_user_admin_audit BEGIN SELECT RAISE(ABORT,'immutable user administration audit'); END;
       CREATE TRIGGER IF NOT EXISTS app_user_admin_audit_no_delete
         BEFORE DELETE ON app_user_admin_audit BEGIN SELECT RAISE(ABORT,'immutable user administration audit'); END;
+      CREATE TABLE IF NOT EXISTS app_mfa_enrollments (
+        user_id INTEGER PRIMARY KEY REFERENCES app_users(id) ON DELETE CASCADE,
+        secret_encrypted TEXT NOT NULL,
+        expires_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS app_mfa_recovery_codes (
+        user_id INTEGER NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+        code_hash TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        used_at INTEGER,
+        PRIMARY KEY(user_id,code_hash)
+      );
+      CREATE TABLE IF NOT EXISTS app_mfa_audit (
+        id INTEGER PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+        event TEXT NOT NULL CHECK(event IN ('enabled','disabled','recovery_code_used')),
+        occurred_at INTEGER NOT NULL
+      );
+      CREATE TRIGGER IF NOT EXISTS app_mfa_audit_no_update
+        BEFORE UPDATE ON app_mfa_audit BEGIN SELECT RAISE(ABORT,'immutable MFA audit'); END;
+      CREATE TRIGGER IF NOT EXISTS app_mfa_audit_no_delete
+        BEFORE DELETE ON app_mfa_audit BEGIN SELECT RAISE(ABORT,'immutable MFA audit'); END;
     `);
     const resetColumns = new Set(this.#db.prepare('PRAGMA table_info(app_password_reset_tokens)').all().map((column) => column.name));
     if (!resetColumns.has('delivery_state')) {
@@ -136,6 +169,13 @@ export class AuthStore {
     const userColumns = new Set(this.#db.prepare('PRAGMA table_info(app_users)').all().map((column) => column.name));
     if (!userColumns.has('auth0_issuer')) this.#db.exec('ALTER TABLE app_users ADD COLUMN auth0_issuer TEXT');
     if (!userColumns.has('auth0_subject')) this.#db.exec('ALTER TABLE app_users ADD COLUMN auth0_subject TEXT');
+    if (!userColumns.has('mfa_enabled')) this.#db.exec('ALTER TABLE app_users ADD COLUMN mfa_enabled INTEGER NOT NULL DEFAULT 0 CHECK(mfa_enabled IN (0,1))');
+    if (!userColumns.has('mfa_secret_encrypted')) this.#db.exec('ALTER TABLE app_users ADD COLUMN mfa_secret_encrypted TEXT');
+    if (!userColumns.has('mfa_last_step')) this.#db.exec('ALTER TABLE app_users ADD COLUMN mfa_last_step INTEGER NOT NULL DEFAULT -1');
+    if (!this.#mfaEncryptionKey && this.#db.prepare('SELECT 1 FROM app_users WHERE mfa_enabled=1 LIMIT 1').get()) {
+      this.#db.close();
+      throw new Error('CMS_ERP_MFA_ENCRYPTION_KEY is required while MFA-enabled accounts exist.');
+    }
     this.#db.exec(`
       CREATE UNIQUE INDEX IF NOT EXISTS app_users_auth0_identity
         ON app_users(auth0_issuer,auth0_subject)
@@ -184,11 +224,49 @@ export class AuthStore {
     return true;
   }
 
-  authenticate(emailValue, password) {
+  #encryptMfaSecret(secret) {
+    if (!this.#mfaEncryptionKey) throw new Error('MFA encryption is not configured.');
+    const iv = randomBytes(12);
+    const cipher = createCipheriv('aes-256-gcm', this.#mfaEncryptionKey, iv);
+    const ciphertext = Buffer.concat([cipher.update(secret, 'utf8'), cipher.final()]);
+    return [iv.toString('base64url'), cipher.getAuthTag().toString('base64url'), ciphertext.toString('base64url')].join('.');
+  }
+
+  #decryptMfaSecret(value) {
+    if (!this.#mfaEncryptionKey) throw new Error('MFA encryption is not configured.');
+    if (typeof value !== 'string') throw new Error('Stored MFA secret is invalid.');
+    const [ivText, tagText, ciphertextText, extra] = value.split('.');
+    if (!ivText || !tagText || !ciphertextText || extra !== undefined) throw new Error('Stored MFA secret is invalid.');
+    const decipher = createDecipheriv('aes-256-gcm', this.#mfaEncryptionKey, Buffer.from(ivText, 'base64url'));
+    decipher.setAuthTag(Buffer.from(tagText, 'base64url'));
+    return Buffer.concat([decipher.update(Buffer.from(ciphertextText, 'base64url')), decipher.final()]).toString('utf8');
+  }
+
+  #consumeMfaFactor(user, code, now) {
+    if (typeof code !== 'string' || !this.#mfaEncryptionKey) return false;
+    const codeHash = createHash('sha256').update(code, 'utf8').digest('hex');
+    const consumed = this.#db.prepare(`
+      UPDATE app_mfa_recovery_codes SET used_at=?
+      WHERE user_id=? AND code_hash=? AND used_at IS NULL
+    `).run(now, user.id, codeHash);
+    if (Number(consumed.changes) === 1) {
+      this.#db.prepare("INSERT INTO app_mfa_audit(user_id,event,occurred_at) VALUES(?,'recovery_code_used',?)").run(user.id, now);
+      return true;
+    }
+    const secret = this.#decryptMfaSecret(user.mfa_secret_encrypted);
+    const step = matchingTotpStep(secret, code, now, user.mfa_last_step);
+    if (step === null) return false;
+    const accepted = this.#db.prepare(`
+      UPDATE app_users SET mfa_last_step=? WHERE id=? AND mfa_enabled=1 AND mfa_last_step<?
+    `).run(step, user.id, step);
+    return Number(accepted.changes) === 1;
+  }
+
+  authenticate(emailValue, password, mfaCode = '') {
     const email = normalizedEmail(emailValue);
     if (typeof password !== 'string' || password.length > 1024) return null;
     const user = email
-      ? this.#db.prepare('SELECT id,email,password_hash,password_salt,role,active FROM app_users WHERE email=?').get(email)
+      ? this.#db.prepare('SELECT id,email,password_hash,password_salt,role,active,mfa_enabled,mfa_secret_encrypted,mfa_last_step FROM app_users WHERE email=?').get(email)
       : undefined;
     const salt = user ? Buffer.from(user.password_salt, 'hex') : this.#dummySalt;
     const expected = user ? Buffer.from(user.password_hash, 'hex') : this.#dummyHash;
@@ -198,6 +276,28 @@ export class AuthStore {
 
     const token = randomBytes(32).toString('base64url');
     const now = Date.now();
+    if (user.mfa_enabled) {
+      this.#db.exec('BEGIN IMMEDIATE');
+      try {
+        const current = this.#db.prepare(`
+          SELECT id,email,password_hash,password_salt,role,active,mfa_enabled,mfa_secret_encrypted,mfa_last_step
+          FROM app_users WHERE id=?
+        `).get(user.id);
+        if (!current || !current.active || !current.mfa_enabled || current.password_hash !== user.password_hash ||
+            current.password_salt !== user.password_salt || !this.#consumeMfaFactor(current, mfaCode, now)) {
+          this.#db.exec('ROLLBACK');
+          return null;
+        }
+        this.#db.prepare('DELETE FROM app_sessions WHERE expires_at<=?').run(now);
+        this.#db.prepare('INSERT INTO app_sessions(token_hash,user_id,expires_at,created_at) VALUES(?,?,?,?)')
+          .run(tokenDigest(token), current.id, now + sessionLifetimeMs, now);
+        this.#db.exec('COMMIT');
+        return { token, actor: { id: current.id, email: current.email, role: current.role } };
+      } catch (error) {
+        try { this.#db.exec('ROLLBACK'); } catch { /* preserve the original error */ }
+        throw error;
+      }
+    }
     this.#db.prepare('DELETE FROM app_sessions WHERE expires_at<=?').run(now);
     this.#db.prepare('INSERT INTO app_sessions(token_hash,user_id,expires_at,created_at) VALUES(?,?,?,?)')
       .run(tokenDigest(token), user.id, now + sessionLifetimeMs, now);
@@ -639,6 +739,115 @@ export class AuthStore {
       WHERE s.token_hash=? AND s.expires_at>? AND u.active=1
     `).get(tokenDigest(token), Date.now());
     return row ? { token, tokenHash: row.token_hash, actor: { id: row.id, email: row.email, role: row.role } } : null;
+  }
+
+  mfaStatus(req, actor) {
+    const session = this.#session(req);
+    if (!session || session.actor.id !== actor?.id) return { error: 'AUTH_REQUIRED' };
+    const user = this.#db.prepare('SELECT mfa_enabled FROM app_users WHERE id=? AND active=1').get(actor.id);
+    return user ? { data: { enabled: user.mfa_enabled === 1, encryptionConfigured: Boolean(this.#mfaEncryptionKey) } } : { error: 'AUTH_REQUIRED' };
+  }
+
+  beginMfaEnrollment(req, actor, currentPassword) {
+    const session = this.#session(req);
+    if (!session || session.actor.id !== actor?.id) return { error: 'AUTH_REQUIRED' };
+    if (!this.#mfaEncryptionKey) return { error: 'MFA_NOT_CONFIGURED' };
+    if (typeof currentPassword !== 'string' || currentPassword.length > 1024) return { error: 'CURRENT_PASSWORD_INVALID' };
+    const user = this.#db.prepare('SELECT id,email,password_hash,password_salt,mfa_enabled FROM app_users WHERE id=? AND active=1').get(actor.id);
+    if (!user) return { error: 'AUTH_REQUIRED' };
+    const actual = scryptSync(currentPassword, Buffer.from(user.password_salt, 'hex'), 64);
+    const expected = Buffer.from(user.password_hash, 'hex');
+    if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) return { error: 'CURRENT_PASSWORD_INVALID' };
+    if (user.mfa_enabled) return { error: 'MFA_ALREADY_ENABLED' };
+
+    const secret = createTotpSecret();
+    const encrypted = this.#encryptMfaSecret(secret);
+    const now = Date.now();
+    const expiresAt = now + 10 * 60 * 1000;
+    this.#db.prepare(`
+      INSERT INTO app_mfa_enrollments(user_id,secret_encrypted,expires_at) VALUES(?,?,?)
+      ON CONFLICT(user_id) DO UPDATE SET secret_encrypted=excluded.secret_encrypted,expires_at=excluded.expires_at
+    `).run(user.id, encrypted, expiresAt);
+    const label = encodeURIComponent(`CMS ERP:${user.email}`);
+    const otpauthUrl = `otpauth://totp/${label}?secret=${secret}&issuer=${encodeURIComponent('CMS ERP')}&algorithm=SHA1&digits=6&period=30`;
+    return { data: { secret, otpauthUrl, expiresAt } };
+  }
+
+  confirmMfaEnrollment(req, actor, code) {
+    const session = this.#session(req);
+    if (!session || session.actor.id !== actor?.id) return { error: 'AUTH_REQUIRED' };
+    if (!this.#mfaEncryptionKey) return { error: 'MFA_NOT_CONFIGURED' };
+    if (typeof code !== 'string' || !/^\d{6}$/u.test(code)) return { error: 'INVALID_MFA_CODE' };
+    const now = Date.now();
+    this.#db.exec('BEGIN IMMEDIATE');
+    try {
+      const user = this.#db.prepare('SELECT id,active,mfa_enabled FROM app_users WHERE id=?').get(actor.id);
+      const enrollment = this.#db.prepare('SELECT secret_encrypted,expires_at FROM app_mfa_enrollments WHERE user_id=?').get(actor.id);
+      if (!user || !user.active) { this.#db.exec('ROLLBACK'); return { error: 'AUTH_REQUIRED' }; }
+      if (user.mfa_enabled) { this.#db.exec('ROLLBACK'); return { error: 'MFA_ALREADY_ENABLED' }; }
+      if (!enrollment || enrollment.expires_at <= now) {
+        this.#db.prepare('DELETE FROM app_mfa_enrollments WHERE user_id=?').run(actor.id);
+        this.#db.exec('COMMIT');
+        return { error: 'MFA_ENROLLMENT_EXPIRED' };
+      }
+      const secret = this.#decryptMfaSecret(enrollment.secret_encrypted);
+      const step = matchingTotpStep(secret, code, now, -1);
+      if (step === null) { this.#db.exec('ROLLBACK'); return { error: 'INVALID_MFA_CODE' }; }
+      const codes = Array.from({ length: 10 }, () => randomBytes(12).toString('base64url'));
+      this.#db.prepare(`
+        UPDATE app_users SET mfa_enabled=1,mfa_secret_encrypted=?,mfa_last_step=?
+        WHERE id=? AND active=1 AND mfa_enabled=0
+      `).run(enrollment.secret_encrypted, step, actor.id);
+      this.#db.prepare('DELETE FROM app_mfa_recovery_codes WHERE user_id=?').run(actor.id);
+      const insertCode = this.#db.prepare('INSERT INTO app_mfa_recovery_codes(user_id,code_hash,created_at) VALUES(?,?,?)');
+      for (const recoveryCode of codes) insertCode.run(actor.id, createHash('sha256').update(recoveryCode, 'utf8').digest('hex'), now);
+      this.#db.prepare('DELETE FROM app_mfa_enrollments WHERE user_id=?').run(actor.id);
+      this.#db.prepare('DELETE FROM app_sessions WHERE user_id=? AND token_hash<>?').run(actor.id, session.tokenHash);
+      this.#db.prepare("INSERT INTO app_mfa_audit(user_id,event,occurred_at) VALUES(?,'enabled',?)").run(actor.id, now);
+      this.#db.exec('COMMIT');
+      return { data: { enabled: true, recoveryCodes: codes } };
+    } catch (error) {
+      try { this.#db.exec('ROLLBACK'); } catch { /* preserve the original error */ }
+      throw error;
+    }
+  }
+
+  disableMfa(req, actor, currentPassword, code) {
+    const session = this.#session(req);
+    if (!session || session.actor.id !== actor?.id) return { error: 'AUTH_REQUIRED' };
+    if (typeof currentPassword !== 'string' || currentPassword.length > 1024 || typeof code !== 'string' || code.length > 128) {
+      return { error: 'INVALID_MFA_REQUEST' };
+    }
+    const current = this.#db.prepare('SELECT id,active,password_hash,password_salt,mfa_enabled FROM app_users WHERE id=?').get(actor.id);
+    if (!current || !current.active) return { error: 'AUTH_REQUIRED' };
+    const suppliedHash = scryptSync(currentPassword, Buffer.from(current.password_salt, 'hex'), 64);
+    const expectedHash = Buffer.from(current.password_hash, 'hex');
+    if (suppliedHash.length !== expectedHash.length || !timingSafeEqual(suppliedHash, expectedHash)) return { error: 'CURRENT_PASSWORD_INVALID' };
+    if (!current.mfa_enabled) return { error: 'MFA_NOT_ENABLED' };
+
+    const now = Date.now();
+    this.#db.exec('BEGIN IMMEDIATE');
+    try {
+      const user = this.#db.prepare(`
+        SELECT id,active,password_hash,password_salt,mfa_enabled,mfa_secret_encrypted,mfa_last_step
+        FROM app_users WHERE id=?
+      `).get(actor.id);
+      if (!user || !user.active || !user.mfa_enabled || user.password_hash !== current.password_hash || user.password_salt !== current.password_salt) {
+        this.#db.exec('ROLLBACK');
+        return { error: 'AUTH_REQUIRED' };
+      }
+      if (!this.#consumeMfaFactor(user, code, now)) { this.#db.exec('ROLLBACK'); return { error: 'INVALID_MFA_CODE' }; }
+      this.#db.prepare('UPDATE app_users SET mfa_enabled=0,mfa_secret_encrypted=NULL,mfa_last_step=-1 WHERE id=?').run(actor.id);
+      this.#db.prepare('DELETE FROM app_mfa_recovery_codes WHERE user_id=?').run(actor.id);
+      this.#db.prepare('DELETE FROM app_mfa_enrollments WHERE user_id=?').run(actor.id);
+      this.#db.prepare('DELETE FROM app_sessions WHERE user_id=? AND token_hash<>?').run(actor.id, session.tokenHash);
+      this.#db.prepare("INSERT INTO app_mfa_audit(user_id,event,occurred_at) VALUES(?,'disabled',?)").run(actor.id, now);
+      this.#db.exec('COMMIT');
+      return { data: { enabled: false } };
+    } catch (error) {
+      try { this.#db.exec('ROLLBACK'); } catch { /* preserve the original error */ }
+      throw error;
+    }
   }
 
   actor(req) {
