@@ -10,11 +10,12 @@ new draft does not replace the current public version. The Site also contains
 CRM, properties, catalog, quotes, workorders, planning, execution, integrations,
 reports, customer access, privacy, governance and audit modules.
 
-Work checked Site metadata and cloned/read the active DEV v11 and production
-v49 source commits through the Sites source workflow. ACC metadata was read, but
-its source was not available in that task. The route and authentication
-observations below come from matching files inspected in current DEV and
-production; this local CMS/ERP repository has not been connected or deployed.
+Work checked Site metadata and cloned/read DEV v11 and production v49 source
+commits through the Sites source workflow. It later deployed a DEV-only customer
+auth origin fix as DEV v12; ACC metadata was read, but its source was not
+available. The route and authentication observations below come from the v11
+and v49 source reads, with the v12 origin patch recorded separately. This local
+CMS/ERP repository has not been connected or deployed.
 
 ## Confirmed Site and API state
 
@@ -24,6 +25,10 @@ production; this local CMS/ERP repository has not been connected or deployed.
   `https://test.cai-techniek-nl.chatgpt.site`.
 - Production was version 49 from commit
   `5317bfcd41d06990a245f2d33e52bc6cbf63d124`.
+- Work later deployed DEV v12 at commit
+  `44b4d4dc41c744b7bdf6409e89d7bfec08e91d60`; its deployment succeeded. The
+  change makes customer-auth callbacks use the DEV origin when
+  `CUSTOMER_AUTH_ORIGIN` is configured. ACC and production were not modified.
 - DEV v11 and production v49 have divergent Git histories, but the inspected
   login, portal, CMS and API files have matching contents. ACC v4's source was
   not inspected.
