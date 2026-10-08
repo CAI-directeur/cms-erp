@@ -16,6 +16,15 @@ This file records source and verification that have actually been observed.
 
 The SQLite engine and import planner are standalone modules, not a complete CMS/ERP application. No core-app integration or ACK has been observed. The host application still owns authentication, CSRF/session handling, organization boundaries, private database configuration, CMS screens, deployment and external provider integrations. The operations module must not be described as a live WordPress connector or deployed ERP.
 
+## CMS content service
+
+- Owner: this Codex task; source cards and sprint placement in Weft are pending access to the board.
+- Branch: `codex/service-operations-integration`.
+- Scope: content types and validation, SQLite drafts and published snapshots, optimistic versions, role checks, idempotent writes, revision/audit history, a host HTTP adapter, and escaped public rendering.
+- Verification: Node.js `v24.19.0`; 23 module tests passed, 0 failed. The module tests cover schema coexistence with service operations. GitHub Actions has not run for this branch.
+- Limits: the module supplies no editor UI, media upload, localization, scheduling, frontend routing, or deployment. Authentication/session resolution, CSRF, tenant boundaries, network-level rate limits, private database location and deployment remain host responsibilities.
+- Weft: the tab is currently at the sign-in page, so its cards and sprint board have not been read or changed.
+
 ## Existing WordPress domain contract
 
 - Branch: `integration/wordpress-contracts`.

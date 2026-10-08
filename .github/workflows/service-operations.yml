@@ -1,4 +1,4 @@
-name: Service operations checks
+name: CMS/ERP checks
 
 on:
   push:
@@ -16,8 +16,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24.19.0
-      - name: Run domain, service, HTTP and import tests
+      - name: Run domain, CMS, service, HTTP and import tests
         run: >-
           node --test integrations/wordpress-contract/domain.test.mjs
+          modules/content-management/*.test.mjs
           modules/service-operations/*.test.mjs
           integrations/wordpress-import/*.test.mjs
