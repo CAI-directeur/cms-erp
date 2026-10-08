@@ -41,3 +41,10 @@ The SQLite engine and import planner are standalone modules, not a complete CMS/
 ## Handoff boundaries
 
 The core builder should integrate the module through the documented host contract and confirm that handoff in repository history. WordPress import remains a reviewed proposal: the host fetches data with its own credentials, persists source-to-ERP mappings and executes an approved plan with stable idempotency. No customer records, production database, credentials, local configuration or private planning links belong in this public repository.
+
+## Cross-chat handoff and execution evidence
+
+- A sent message, delivery receipt, or `active` chat status is not evidence that delegated work ran.
+- Each Work handoff must return a report in its target chat with outcome and status, exact environment and Site/version/source commit, changed files or data, commands/tests actually run and results, production and board read-back (or an explicit statement that they were not run), and remaining blockers.
+- The coordinator reads the target chat after delegation and reports only returned evidence. If the chat is still active or has no report, the task remains unverified; do not mark it complete.
+- ACC and local verification belongs in the technical handoff. The production board reflects only behavior confirmed after a production deployment and live read-back.
