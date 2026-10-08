@@ -206,6 +206,23 @@ test('authenticated REST APIs complete a CMS and service ERP workflow', async ()
   });
   assert.equal(publisherAccount.response.status, 201);
   const publisher = await login(publisherEmail, publisherPassword);
+  const publisherId = publisherAccount.payload.data.id;
+  const nonAdminUserUpdate = await request(`/api/users/${publisherId}`, {
+    cookie: publisher.cookie, csrf: publisher.csrf, method: 'PATCH',
+    body: { role: 'admin' }, idempotencyKey: 'cms-api-user-nonadmin',
+  });
+  assert.equal(nonAdminUserUpdate.response.status, 403);
+  const missingUserUpdateCsrf = await request(`/api/users/${publisherId}`, {
+    cookie: admin.cookie, method: 'PATCH', body: { active: false },
+    idempotencyKey: 'cms-api-user-no-csrf',
+  });
+  assert.equal(missingUserUpdateCsrf.response.status, 403);
+  const selfUserUpdate = await request(`/api/users/${admin.actor.id}`, {
+    cookie: admin.cookie, csrf: admin.csrf, method: 'PATCH', body: { role: 'reader' },
+    idempotencyKey: 'cms-api-user-self',
+  });
+  assert.equal(selfUserUpdate.response.status, 409);
+  assert.equal(selfUserUpdate.payload.error, 'SELF_MANAGEMENT_FORBIDDEN');
   const published = await request('/api/content/commands/publish', {
     cookie: publisher.cookie,
     csrf: publisher.csrf,
@@ -219,6 +236,23 @@ test('authenticated REST APIs complete a CMS and service ERP workflow', async ()
   const publicHtml = await publicPage.text();
   assert.match(publicHtml, /&lt;script&gt;synthetic\(\)&lt;\/script&gt;/u);
   assert.doesNotMatch(publicHtml, /<script>synthetic\(\)<\/script>/u);
+  const changePublisherRole = await request(`/api/users/${publisherId}`, {
+    cookie: admin.cookie, csrf: admin.csrf, method: 'PATCH', body: { role: 'reader' },
+    idempotencyKey: 'cms-api-user-role-change-1',
+  });
+  assert.equal(changePublisherRole.response.status, 200);
+  assert.equal(changePublisherRole.payload.data.role, 'reader');
+  const repeatPublisherRole = await request(`/api/users/${publisherId}`, {
+    cookie: admin.cookie, csrf: admin.csrf, method: 'PATCH', body: { role: 'reader' },
+    idempotencyKey: 'cms-api-user-role-change-1',
+  });
+  assert.deepEqual(repeatPublisherRole.payload, changePublisherRole.payload);
+  const conflictingPublisherRole = await request(`/api/users/${publisherId}`, {
+    cookie: admin.cookie, csrf: admin.csrf, method: 'PATCH', body: { role: 'editor' },
+    idempotencyKey: 'cms-api-user-role-change-1',
+  });
+  assert.equal(conflictingPublisherRole.response.status, 409);
+  assert.equal((await request('/api/auth/session', { cookie: publisher.cookie })).response.status, 401);
 
   const technicianCreated = await request('/api/users', {
     cookie: admin.cookie,
@@ -236,6 +270,21 @@ test('authenticated REST APIs complete a CMS and service ERP workflow', async ()
   const technicianSession = await login(technicianEmail, technicianPassword);
   const hiddenTechnicianDirectory = await request('/api/technicians', { cookie: technicianSession.cookie });
   assert.equal(hiddenTechnicianDirectory.response.status, 403);
+  const disabledTechnician = await request(`/api/users/${technicianId}`, {
+    cookie: admin.cookie, csrf: admin.csrf, method: 'PATCH', body: { active: false },
+    idempotencyKey: 'cms-api-user-disable-tech',
+  });
+  assert.equal(disabledTechnician.response.status, 200);
+  assert.equal(disabledTechnician.payload.data.active, 0);
+  assert.equal((await request('/api/auth/session', { cookie: technicianSession.cookie })).response.status, 401);
+  assert.deepEqual((await request('/api/technicians', { cookie: admin.cookie })).payload.data, []);
+  const enabledTechnician = await request(`/api/users/${technicianId}`, {
+    cookie: admin.cookie, csrf: admin.csrf, method: 'PATCH', body: { active: true },
+    idempotencyKey: 'cms-api-user-enable-tech',
+  });
+  assert.equal(enabledTechnician.response.status, 200);
+  assert.equal(enabledTechnician.payload.data.active, 1);
+  assert.equal((await login(technicianEmail, technicianPassword)).actor.role, 'technician');
   const unknownTechnician = await command(admin, 'create-resource', {
     name: 'Onbekende monteur', technicianId: technicianId + 1000,
   }, 'cms-api-resource-denied');

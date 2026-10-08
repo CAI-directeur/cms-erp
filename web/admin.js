@@ -46,7 +46,7 @@ function canonicalJson(value) {
   return JSON.stringify(value);
 }
 
-async function postIntent(path, payload, { sensitive = false, scope = '' } = {}) {
+async function postIntent(path, payload, { sensitive = false, scope = '', method = 'POST' } = {}) {
   const canonical = canonicalJson(payload);
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(canonical));
   const fingerprint = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
@@ -60,7 +60,7 @@ async function postIntent(path, payload, { sensitive = false, scope = '' } = {})
     };
     try {
       const result = await request(path, {
-        method: 'POST', headers: postHeaders(key), body: JSON.stringify(payload),
+        method, headers: postHeaders(key), body: JSON.stringify(payload),
       });
       clear();
       return result;
@@ -84,7 +84,7 @@ async function postIntent(path, payload, { sensitive = false, scope = '' } = {})
   };
   try {
     const result = await request(path, {
-      method: 'POST', headers: postHeaders(key), body: JSON.stringify(payload),
+      method, headers: postHeaders(key), body: JSON.stringify(payload),
     });
     clear();
     return result;
@@ -730,6 +730,42 @@ function createUserPanel() {
       const email = document.createElement('strong'); email.textContent = user.email;
       const role = document.createElement('p'); role.textContent = `${user.role} · ${user.active ? 'actief' : 'uitgeschakeld'} · Auth0 ${user.auth0Linked ? 'gekoppeld' : 'niet gekoppeld'}`;
       text.append(email, role); row.append(text);
+      const actions = document.createElement('div'); actions.className = 'record-actions';
+      const roleSelect = document.createElement('select');
+      roleSelect.setAttribute('aria-label', `Rol voor ${user.email}`);
+      const roleOptions = [['editor','CMS-editor'],['publisher','CMS-uitgever'],['planner','ERP-planner'],['technician','ERP-monteur'],['finance','ERP-financiën'],['reader','Alleen lezen'],['admin','Admin']];
+      for (const [value, label] of roleOptions) {
+        const option = document.createElement('option'); option.value = value; option.textContent = label;
+        option.selected = value === user.role; roleSelect.append(option);
+      }
+      const saveRole = document.createElement('button'); saveRole.type = 'button'; saveRole.className = 'button-secondary'; saveRole.textContent = 'Rol wijzigen';
+      saveRole.disabled = user.id === session.actor.id;
+      saveRole.addEventListener('click', async () => {
+        saveRole.disabled = true;
+        try {
+          await postIntent(`/api/users/${user.id}`, { role: roleSelect.value }, { sensitive: true, scope: `users-update-${user.id}`, method: 'PATCH' });
+          message(feedback, `Rol van ${user.email} bijgewerkt.`);
+          await Promise.all([loadUsers(), refreshReferences(['resources'])]);
+        } catch (error) {
+          message(feedback, errorText('Rol niet bijgewerkt', error), true);
+          saveRole.disabled = false;
+        }
+      });
+      const toggleActive = document.createElement('button'); toggleActive.type = 'button'; toggleActive.className = 'button-secondary';
+      toggleActive.textContent = user.active ? 'Account uitschakelen' : 'Account activeren';
+      toggleActive.disabled = user.id === session.actor.id;
+      toggleActive.addEventListener('click', async () => {
+        toggleActive.disabled = true;
+        try {
+          await postIntent(`/api/users/${user.id}`, { active: !user.active }, { sensitive: true, scope: `users-update-${user.id}`, method: 'PATCH' });
+          message(feedback, `Account van ${user.email} ${user.active ? 'uitgeschakeld' : 'geactiveerd'}.`);
+          await Promise.all([loadUsers(), refreshReferences(['resources'])]);
+        } catch (error) {
+          message(feedback, errorText('Accountstatus niet bijgewerkt', error), true);
+          toggleActive.disabled = false;
+        }
+      });
+      actions.append(roleSelect, saveRole, toggleActive); row.append(actions);
       if (session.auth0McpEnabled && user.active && !user.auth0Linked) {
         const actions = document.createElement('div'); actions.className = 'record-actions';
         const link = document.createElement('button'); link.type = 'button'; link.className = 'button-secondary'; link.textContent = 'Auth0-koppeling starten';

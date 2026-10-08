@@ -76,9 +76,12 @@ an exact `CMS_ERP_ORIGIN` using HTTPS, secure cookies, TLS at the public edge,
 backups, monitoring and a persistent private data volume.
 
 The first admin can use the content and ERP screens and provision role-based
-accounts. Every signed-in user can change their password after confirming the
-current password; changing it rotates the current session and revokes the
-account's other sessions. Password recovery is available when both
+accounts. Admins can change account roles or deactivate accounts; each change is
+audited, idempotent, and revokes the affected account's sessions. The last
+active admin cannot be removed. Every signed-in user can change their password
+after confirming the current password; changing it rotates the current session
+and revokes the account's other sessions. Password recovery is available when
+both
 `RESEND_API_KEY` and `RESEND_FROM_EMAIL` are configured in the private runtime.
 Reset links are single-use, expire after 30 minutes, and invalidate existing
 sessions. If mail delivery is not configured, the recovery endpoint stays

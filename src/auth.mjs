@@ -103,6 +103,26 @@ export class AuthStore {
         user_id INTEGER NOT NULL REFERENCES app_users(id),
         PRIMARY KEY(actor_id,idem_key)
       );
+      CREATE TABLE IF NOT EXISTS app_user_admin_idempotency (
+        actor_id INTEGER NOT NULL REFERENCES app_users(id),
+        idem_key TEXT NOT NULL,
+        fingerprint TEXT NOT NULL,
+        response_json TEXT NOT NULL CHECK(json_valid(response_json)),
+        created_at TEXT NOT NULL,
+        PRIMARY KEY(actor_id,idem_key)
+      );
+      CREATE TABLE IF NOT EXISTS app_user_admin_audit (
+        id INTEGER PRIMARY KEY,
+        actor_id INTEGER NOT NULL REFERENCES app_users(id),
+        target_user_id INTEGER NOT NULL REFERENCES app_users(id),
+        before_json TEXT NOT NULL CHECK(json_valid(before_json)),
+        after_json TEXT NOT NULL CHECK(json_valid(after_json)),
+        created_at TEXT NOT NULL
+      );
+      CREATE TRIGGER IF NOT EXISTS app_user_admin_audit_no_update
+        BEFORE UPDATE ON app_user_admin_audit BEGIN SELECT RAISE(ABORT,'immutable user administration audit'); END;
+      CREATE TRIGGER IF NOT EXISTS app_user_admin_audit_no_delete
+        BEFORE DELETE ON app_user_admin_audit BEGIN SELECT RAISE(ABORT,'immutable user administration audit'); END;
     `);
     const resetColumns = new Set(this.#db.prepare('PRAGMA table_info(app_password_reset_tokens)').all().map((column) => column.name));
     if (!resetColumns.has('delivery_state')) {
@@ -406,6 +426,79 @@ export class AuthStore {
 
   listUsers() {
     return this.#db.prepare('SELECT id,email,role,active,created_at AS createdAt,(auth0_subject IS NOT NULL) AS auth0Linked FROM app_users ORDER BY id').all();
+  }
+
+  updateUser(actor, key, userId, input = {}) {
+    if (actor?.role !== 'admin' || !Number.isSafeInteger(actor.id) || actor.id < 1) return { error: 'FORBIDDEN' };
+    if (!Number.isSafeInteger(userId) || userId < 1 || !input || typeof input !== 'object' || Array.isArray(input)) {
+      return { error: 'INVALID_USER_UPDATE' };
+    }
+    const keys = Object.keys(input);
+    if (!keys.length || keys.some((name) => !['role', 'active'].includes(name)) ||
+        (Object.hasOwn(input, 'role') && !roles.has(input.role)) ||
+        (Object.hasOwn(input, 'active') && typeof input.active !== 'boolean')) {
+      return { error: 'INVALID_USER_UPDATE' };
+    }
+    if (typeof key !== 'string' || !/^[A-Za-z0-9._:-]{8,100}$/u.test(key)) return { error: 'IDEMPOTENCY_KEY_REQUIRED' };
+
+    const fingerprint = createHmac('sha256', this.#csrfSecret)
+      .update(JSON.stringify({ userId, role: input.role ?? null, active: input.active ?? null }), 'utf8').digest('hex');
+    this.#db.exec('BEGIN IMMEDIATE');
+    try {
+      const currentActor = this.#db.prepare('SELECT role,active FROM app_users WHERE id=?').get(actor.id);
+      if (!currentActor || currentActor.role !== 'admin' || currentActor.active !== 1) {
+        this.#db.exec('ROLLBACK');
+        return { error: 'FORBIDDEN' };
+      }
+      const prior = this.#db.prepare(`
+        SELECT fingerprint,response_json FROM app_user_admin_idempotency WHERE actor_id=? AND idem_key=?
+      `).get(actor.id, key);
+      if (prior) {
+        this.#db.exec('COMMIT');
+        return prior.fingerprint === fingerprint
+          ? JSON.parse(prior.response_json)
+          : { error: 'IDEMPOTENCY_CONFLICT' };
+      }
+
+      const current = this.#db.prepare(`
+        SELECT id,email,role,active,created_at AS createdAt FROM app_users WHERE id=?
+      `).get(userId);
+      if (!current) { this.#db.exec('ROLLBACK'); return { error: 'USER_NOT_FOUND' }; }
+      const nextRole = input.role ?? current.role;
+      const nextActive = Object.hasOwn(input, 'active') ? Number(input.active) : current.active;
+      const changed = nextRole !== current.role || nextActive !== current.active;
+      if (changed && userId === actor.id) {
+        this.#db.exec('ROLLBACK');
+        return { error: 'SELF_MANAGEMENT_FORBIDDEN' };
+      }
+      if (current.role === 'admin' && current.active === 1 && (nextRole !== 'admin' || nextActive !== 1)) {
+        const activeAdmins = this.#db.prepare("SELECT count(*) AS count FROM app_users WHERE role='admin' AND active=1").get().count;
+        if (activeAdmins <= 1) { this.#db.exec('ROLLBACK'); return { error: 'LAST_ADMIN_REQUIRED' }; }
+      }
+
+      if (changed) {
+        this.#db.prepare('UPDATE app_users SET role=?,active=? WHERE id=?').run(nextRole, nextActive, userId);
+        this.#db.prepare('DELETE FROM app_sessions WHERE user_id=?').run(userId);
+        const after = { id: current.id, email: current.email, role: nextRole, active: nextActive, createdAt: current.createdAt };
+        this.#db.prepare(`
+          INSERT INTO app_user_admin_audit(actor_id,target_user_id,before_json,after_json,created_at)
+          VALUES(?,?,?,?,?)
+        `).run(actor.id, userId, JSON.stringify(current), JSON.stringify(after), new Date().toISOString());
+      }
+      const data = this.#db.prepare(`
+        SELECT id,email,role,active,created_at AS createdAt FROM app_users WHERE id=?
+      `).get(userId);
+      const response = { data };
+      this.#db.prepare(`
+        INSERT INTO app_user_admin_idempotency(actor_id,idem_key,fingerprint,response_json,created_at)
+        VALUES(?,?,?,?,?)
+      `).run(actor.id, key, fingerprint, JSON.stringify(response), new Date().toISOString());
+      this.#db.exec('COMMIT');
+      return response;
+    } catch (error) {
+      try { this.#db.exec('ROLLBACK'); } catch { /* preserve the original error */ }
+      throw error;
+    }
   }
 
   actorForExternalIdentity(issuer, subject) {

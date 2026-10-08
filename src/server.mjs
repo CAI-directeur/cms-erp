@@ -250,6 +250,25 @@ async function route(req, res) {
     if (auth.actor(req)?.role !== 'admin') return json(res, 403, { error: 'FORBIDDEN', requestId });
     return json(res, 200, { data: auth.listUsers() });
   }
+  const userMatch = /^\/api\/users\/([1-9]\d*)$/u.exec(url.pathname);
+  if (userMatch && req.method === 'PATCH') {
+    const actor = auth.actor(req);
+    if (actor?.role !== 'admin') return json(res, 403, { error: 'FORBIDDEN', requestId });
+    if (req.headers.origin !== allowedOrigin || !auth.verifyCsrf(req, actor)) return json(res, 403, { error: 'CSRF_REJECTED', requestId });
+    const input = await readJson(req);
+    if (!input || Object.keys(input).some((key) => !['role', 'active'].includes(key))) {
+      return json(res, 400, { error: 'INVALID_USER_UPDATE', requestId });
+    }
+    const result = auth.updateUser(actor, req.headers['idempotency-key'], Number(userMatch[1]), input);
+    if (result.error) {
+      const status = result.error === 'USER_NOT_FOUND' ? 404
+        : result.error === 'FORBIDDEN' ? 403
+          : ['IDEMPOTENCY_CONFLICT', 'SELF_MANAGEMENT_FORBIDDEN', 'LAST_ADMIN_REQUIRED'].includes(result.error) ? 409
+            : 400;
+      return json(res, status, { error: result.error, requestId });
+    }
+    return json(res, 200, result);
+  }
   const auth0LinkMatch = /^\/api\/users\/([1-9]\d*)\/auth0-link$/u.exec(url.pathname);
   if (auth0LinkMatch && req.method === 'POST') {
     if (!mcpEndpoint) return json(res, 503, { error: 'AUTH0_MCP_DISABLED', requestId });
