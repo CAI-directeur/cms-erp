@@ -1,2 +1,2 @@
 # cms-erp
- the CMS andERP s software repository tto build a open source and to use by everyone system
+ the CMS and ERP software repository to build a open source system and to use by everyone
