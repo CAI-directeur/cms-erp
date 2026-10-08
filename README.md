@@ -37,12 +37,15 @@ recovery, MFA, media uploads, production deployment automation, a live
 WordPress connector, provider delivery, and legally reviewed invoice layouts
 remain separate work.
 
-An optional ChatGPT MCP endpoint is being added at `/mcp`. It is disabled when
+An optional ChatGPT MCP endpoint is implemented at `/mcp`. It is disabled when
 Auth0 configuration is absent and fails closed on partial configuration. When
-enabled, it reuses the same CMS/ERP services and local account roles. See
+enabled, it reuses the same CMS/ERP services and local account roles, advertises
+per-tool OAuth scopes, and returns ChatGPT-compatible authorization challenges.
+See
 [`docs/MCP-AUTH0.md`](docs/MCP-AUTH0.md) for the configuration and current
 deployment boundaries. This code is not yet connected to the existing Site or
-published as a ChatGPT plugin.
+published as a ChatGPT plugin; no public endpoint or live OAuth acceptance is
+claimed.
 
 The existing CAI Business OS Site already has its own `/app/cms` interface,
 content collections and owner-review workflow. This host is not wired into that

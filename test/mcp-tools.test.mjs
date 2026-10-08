@@ -7,6 +7,15 @@ function createServer() {
   return createMcpServer({ auth: {}, content: {}, operations: {}, authInfo: {} });
 }
 
+test('every MCP tool declares explicit boolean safety annotations', () => {
+  const tools = createServer()._registeredTools;
+  for (const [name, tool] of Object.entries(tools)) {
+    for (const key of ['readOnlyHint', 'destructiveHint', 'openWorldHint']) {
+      assert.equal(typeof tool.annotations?.[key], 'boolean', `${name}.${key}`);
+    }
+  }
+});
+
 test('MCP tools advertise a separate, least-privilege scope for account linking', () => {
   const tools = createServer()._registeredTools;
   assert.deepEqual(tools.get_my_profile.securitySchemes[0].scopes, ['profile:read']);
