@@ -75,6 +75,27 @@ export class AuthStore {
         created_at INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS app_sessions_expiry ON app_sessions(expires_at);
+      CREATE TABLE IF NOT EXISTS app_password_reset_tokens (
+        token_hash TEXT PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        consumed_at INTEGER,
+        delivery_state TEXT NOT NULL DEFAULT 'pending' CHECK(delivery_state IN ('pending','active'))
+      );
+      CREATE INDEX IF NOT EXISTS app_password_reset_expiry ON app_password_reset_tokens(expires_at);
+      CREATE TABLE IF NOT EXISTS app_auth_audit (
+        id INTEGER PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+        event TEXT NOT NULL CHECK(event IN ('password_reset','password_changed')),
+        occurred_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS app_auth_rate_limits (
+        bucket_hash TEXT PRIMARY KEY,
+        window_started_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        attempts INTEGER NOT NULL CHECK(attempts > 0)
+      );
       CREATE TABLE IF NOT EXISTS app_user_idempotency (
         actor_id INTEGER NOT NULL REFERENCES app_users(id),
         idem_key TEXT NOT NULL,
@@ -83,6 +104,15 @@ export class AuthStore {
         PRIMARY KEY(actor_id,idem_key)
       );
     `);
+    const resetColumns = new Set(this.#db.prepare('PRAGMA table_info(app_password_reset_tokens)').all().map((column) => column.name));
+    if (!resetColumns.has('delivery_state')) {
+      this.#db.exec("ALTER TABLE app_password_reset_tokens ADD COLUMN delivery_state TEXT NOT NULL DEFAULT 'active' CHECK(delivery_state IN ('pending','active'))");
+    }
+    const rateLimitColumns = new Set(this.#db.prepare('PRAGMA table_info(app_auth_rate_limits)').all().map((column) => column.name));
+    if (!rateLimitColumns.has('expires_at')) {
+      this.#db.exec('ALTER TABLE app_auth_rate_limits ADD COLUMN expires_at INTEGER NOT NULL DEFAULT 0');
+    }
+    this.#db.exec('CREATE INDEX IF NOT EXISTS app_auth_rate_limits_expiry ON app_auth_rate_limits(expires_at)');
     const userColumns = new Set(this.#db.prepare('PRAGMA table_info(app_users)').all().map((column) => column.name));
     if (!userColumns.has('auth0_issuer')) this.#db.exec('ALTER TABLE app_users ADD COLUMN auth0_issuer TEXT');
     if (!userColumns.has('auth0_subject')) this.#db.exec('ALTER TABLE app_users ADD COLUMN auth0_subject TEXT');
@@ -191,8 +221,10 @@ export class AuthStore {
         return { error: 'PASSWORD_CHANGED_CONCURRENTLY' };
       }
       this.#db.prepare('DELETE FROM app_sessions WHERE user_id=?').run(actor.id);
+      this.#db.prepare('DELETE FROM app_password_reset_tokens WHERE user_id=?').run(actor.id);
       this.#db.prepare('INSERT INTO app_sessions(token_hash,user_id,expires_at,created_at) VALUES(?,?,?,?)')
         .run(tokenDigest(token), actor.id, now + sessionLifetimeMs, now);
+      this.#db.prepare("INSERT INTO app_auth_audit(user_id,event,occurred_at) VALUES(?,'password_changed',?)").run(actor.id, now);
       this.#db.exec('COMMIT');
       return {
         token,
@@ -201,6 +233,173 @@ export class AuthStore {
       };
     } catch (error) {
       try { this.#db.exec('ROLLBACK'); } catch { /* the transaction may already be closed */ }
+      throw error;
+    }
+  }
+
+  createPasswordReset(emailValue) {
+    const email = normalizedEmail(emailValue);
+    if (!email) return null;
+    const user = this.#db.prepare('SELECT id,email FROM app_users WHERE email=? AND active=1').get(email);
+    if (!user) return null;
+    const token = randomBytes(32).toString('base64url');
+    const tokenHash = tokenDigest(token);
+    const now = Date.now();
+    const expiresAt = now + 30 * 60 * 1000;
+    this.#db.exec('BEGIN IMMEDIATE');
+    try {
+      const current = this.#db.prepare('SELECT id,email FROM app_users WHERE id=? AND active=1').get(user.id);
+      if (!current) {
+        this.#db.exec('ROLLBACK');
+        return null;
+      }
+      this.#db.prepare('DELETE FROM app_password_reset_tokens WHERE expires_at<=?').run(now);
+      this.#db.prepare('INSERT INTO app_password_reset_tokens(token_hash,user_id,created_at,expires_at,delivery_state) VALUES(?,?,?,?,\'pending\')')
+        .run(tokenHash, user.id, now, expiresAt);
+      this.#db.exec('COMMIT');
+      return { email: current.email, token, expiresAt };
+    } catch (error) {
+      try { this.#db.exec('ROLLBACK'); } catch { /* preserve the original error */ }
+      throw error;
+    }
+  }
+
+  activatePasswordReset(token) {
+    if (typeof token !== 'string' || !/^[A-Za-z0-9_-]{43}$/u.test(token)) return false;
+    const tokenHash = tokenDigest(token);
+    const now = Date.now();
+    this.#db.exec('BEGIN IMMEDIATE');
+    try {
+      const pending = this.#db.prepare(`
+        SELECT t.user_id FROM app_password_reset_tokens t
+        JOIN app_users u ON u.id=t.user_id
+        WHERE t.token_hash=? AND t.delivery_state='pending' AND t.consumed_at IS NULL AND t.expires_at>? AND u.active=1
+      `).get(tokenHash, now);
+      if (!pending) {
+        this.#db.exec('ROLLBACK');
+        return false;
+      }
+      const activated = this.#db.prepare(`
+        UPDATE app_password_reset_tokens SET delivery_state='active'
+        WHERE token_hash=? AND delivery_state='pending' AND consumed_at IS NULL AND expires_at>?
+      `).run(tokenHash, now);
+      if (Number(activated.changes) !== 1) {
+        this.#db.exec('ROLLBACK');
+        return false;
+      }
+      this.#db.exec('COMMIT');
+      return true;
+    } catch (error) {
+      try { this.#db.exec('ROLLBACK'); } catch { /* preserve the original error */ }
+      throw error;
+    }
+  }
+
+  discardPendingPasswordReset(token) {
+    if (typeof token !== 'string' || !/^[A-Za-z0-9_-]{43}$/u.test(token)) return false;
+    const result = this.#db.prepare(`
+      DELETE FROM app_password_reset_tokens WHERE token_hash=? AND delivery_state='pending'
+    `).run(tokenDigest(token));
+    return Number(result.changes) === 1;
+  }
+
+  consumeRateLimits(buckets) {
+    if (!Array.isArray(buckets) || buckets.length < 1 || buckets.length > 4 || buckets.some((bucket) =>
+      !bucket || typeof bucket.key !== 'string' || bucket.key.length < 1 || bucket.key.length > 1024 ||
+      !Number.isSafeInteger(bucket.limit) || bucket.limit < 1 || bucket.limit > 10_000 ||
+      !Number.isSafeInteger(bucket.windowMs) || bucket.windowMs < 1000 || bucket.windowMs > 7 * 24 * 60 * 60 * 1000)) {
+      throw new Error('INVALID_RATE_LIMIT_REQUEST');
+    }
+    const now = Date.now();
+    const normalized = buckets.map((bucket) => ({
+      bucketHash: tokenDigest(bucket.key),
+      limit: bucket.limit,
+      windowMs: bucket.windowMs,
+    }));
+    this.#db.exec('BEGIN IMMEDIATE');
+    try {
+      const stamp = Date.now();
+      this.#db.prepare('DELETE FROM app_auth_rate_limits WHERE expires_at<=?').run(stamp);
+      const current = normalized.map((bucket) => ({
+        ...bucket,
+        row: this.#db.prepare('SELECT window_started_at,expires_at,attempts FROM app_auth_rate_limits WHERE bucket_hash=?').get(bucket.bucketHash),
+      }));
+      if (current.some(({ row, limit, windowMs }) => row && Date.now() - row.window_started_at < windowMs && row.attempts >= limit)) {
+        this.#db.exec('ROLLBACK');
+        return false;
+      }
+      if (current.some(({ row }) => !row)) {
+        const rowCount = this.#db.prepare('SELECT count(*) AS count FROM app_auth_rate_limits').get().count;
+        if (rowCount + current.filter(({ row }) => !row).length > 10_000) {
+          this.#db.exec('ROLLBACK');
+          return false;
+        }
+      }
+      for (const { bucketHash, limit, windowMs, row } of current) {
+        if (!row || stamp - row.window_started_at >= windowMs) {
+          this.#db.prepare(`
+            INSERT INTO app_auth_rate_limits(bucket_hash,window_started_at,expires_at,attempts) VALUES(?,?,?,1)
+            ON CONFLICT(bucket_hash) DO UPDATE SET window_started_at=excluded.window_started_at,expires_at=excluded.expires_at,attempts=1
+          `).run(bucketHash, stamp, stamp + windowMs);
+        } else {
+          this.#db.prepare('UPDATE app_auth_rate_limits SET attempts=attempts+1 WHERE bucket_hash=?').run(bucketHash);
+        }
+      }
+      this.#db.exec('COMMIT');
+      return true;
+    } catch (error) {
+      try { this.#db.exec('ROLLBACK'); } catch { /* preserve the original error */ }
+      throw error;
+    }
+  }
+
+  completePasswordReset(token, newPassword) {
+    if (typeof token !== 'string' || !/^[A-Za-z0-9_-]{43}$/u.test(token)) return { error: 'INVALID_OR_EXPIRED_RESET' };
+    if (typeof newPassword !== 'string' || newPassword.length < 14 || newPassword.length > 1024) {
+      return { error: 'INVALID_NEW_PASSWORD' };
+    }
+    const tokenHash = tokenDigest(token);
+    const now = Date.now();
+    this.#db.exec('BEGIN IMMEDIATE');
+    try {
+      const reset = this.#db.prepare(`
+        SELECT t.user_id,t.expires_at FROM app_password_reset_tokens t
+        JOIN app_users u ON u.id=t.user_id
+        WHERE t.token_hash=? AND t.delivery_state='active' AND t.consumed_at IS NULL AND t.expires_at>? AND u.active=1
+      `).get(tokenHash, now);
+      if (!reset) {
+        this.#db.exec('ROLLBACK');
+        return { error: 'INVALID_OR_EXPIRED_RESET' };
+      }
+      const salt = randomBytes(16);
+      const hash = scryptSync(newPassword, salt, 64);
+      const completedAt = Date.now();
+      if (reset.expires_at <= completedAt) {
+        this.#db.exec('ROLLBACK');
+        return { error: 'INVALID_OR_EXPIRED_RESET' };
+      }
+      const updated = this.#db.prepare(`
+        UPDATE app_users SET password_hash=?,password_salt=? WHERE id=? AND active=1
+      `).run(hash.toString('hex'), salt.toString('hex'), reset.user_id);
+      if (Number(updated.changes) !== 1) {
+        this.#db.exec('ROLLBACK');
+        return { error: 'INVALID_OR_EXPIRED_RESET' };
+      }
+      const consumed = this.#db.prepare(`
+        UPDATE app_password_reset_tokens SET consumed_at=?
+        WHERE token_hash=? AND consumed_at IS NULL AND expires_at>?
+      `).run(completedAt, tokenHash, completedAt);
+      if (Number(consumed.changes) !== 1) {
+        this.#db.exec('ROLLBACK');
+        return { error: 'INVALID_OR_EXPIRED_RESET' };
+      }
+      this.#db.prepare('DELETE FROM app_sessions WHERE user_id=?').run(reset.user_id);
+      this.#db.prepare('DELETE FROM app_password_reset_tokens WHERE user_id=?').run(reset.user_id);
+      this.#db.prepare("INSERT INTO app_auth_audit(user_id,event,occurred_at) VALUES(?,'password_reset',?)").run(reset.user_id, completedAt);
+      this.#db.exec('COMMIT');
+      return { data: { passwordChanged: true } };
+    } catch (error) {
+      try { this.#db.exec('ROLLBACK'); } catch { /* preserve the original error */ }
       throw error;
     }
   }

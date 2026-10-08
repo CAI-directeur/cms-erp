@@ -32,10 +32,9 @@ movements, invoices, payments, credit notes and bookkeeping outbox exports.
 Resource assignment is limited to active technician accounts. Lists are
 paginated and writes use stable idempotency keys for retryable requests.
 
-The host is still single-organization. Multi-tenant administration, account
-recovery, MFA, media uploads, production deployment automation, a live
-WordPress connector, provider delivery, and legally reviewed invoice layouts
-remain separate work.
+The host is still single-organization. Multi-tenant administration, MFA, media
+uploads, production deployment automation, a live WordPress connector, provider
+delivery, and legally reviewed invoice layouts remain separate work.
 
 An optional ChatGPT MCP endpoint is implemented at `/mcp`. It is disabled when
 Auth0 configuration is absent and fails closed on partial configuration. When
@@ -79,9 +78,13 @@ backups, monitoring and a persistent private data volume.
 The first admin can use the content and ERP screens and provision role-based
 accounts. Every signed-in user can change their password after confirming the
 current password; changing it rotates the current session and revokes the
-account's other sessions. Email-based password reset/account recovery, MFA,
-tenant isolation and a complete team administration flow are not implemented
-yet.
+account's other sessions. Password recovery is available when both
+`RESEND_API_KEY` and `RESEND_FROM_EMAIL` are configured in the private runtime.
+Reset links are single-use, expire after 30 minutes, and invalidate existing
+sessions. If mail delivery is not configured, the recovery endpoint stays
+unavailable internally and still returns a generic confirmation without
+issuing a token. MFA, tenant isolation and a complete team administration flow
+are not implemented yet.
 
 ## Verify the modules
 

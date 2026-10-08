@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { DatabaseSync } from 'node:sqlite';
 import { mkdtemp, rm } from 'node:fs/promises';
 import net from 'node:net';
 import os from 'node:os';
@@ -126,6 +127,22 @@ test('authenticated REST APIs complete a CMS and service ERP workflow', async ()
   const health = await request('/health');
   assert.equal(health.response.status, 200);
   assert.deepEqual(health.payload, { status: 'ok' });
+
+  const passwordResetPage = await request('/password-reset');
+  assert.equal(passwordResetPage.response.status, 200);
+  assert.equal(passwordResetPage.response.headers.get('referrer-policy'), 'no-referrer');
+  assert.match(passwordResetPage.payload, /Wachtwoord herstellen/u);
+  const emailUnavailable = await request('/api/auth/password-reset/request', {
+    method: 'POST', body: { email: 'admin@example.test' },
+  });
+  const unknownResetAccount = await request('/api/auth/password-reset/request', {
+    method: 'POST', body: { email: 'missing@example.test' },
+  });
+  assert.equal(emailUnavailable.response.status, 202);
+  assert.deepEqual(emailUnavailable.payload, unknownResetAccount.payload);
+  const authDatabase = new DatabaseSync(path.join(tempRoot, 'cms-test.sqlite'));
+  assert.equal(authDatabase.prepare('SELECT count(*) AS count FROM app_auth_rate_limits').get().count, 0);
+  authDatabase.close();
 
   const publicContent = await request('/api/content/public');
   assert.equal(publicContent.response.status, 200);

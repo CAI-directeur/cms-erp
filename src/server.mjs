@@ -5,6 +5,7 @@ import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { AuthStore, sessionCookie } from './auth.mjs';
+import { createResendEmailSender } from './email.mjs';
 import { ContentService, renderPublicContent } from '../modules/content-management/engine.mjs';
 import { createContentHandler } from '../modules/content-management/http.mjs';
 import { OperationsService } from '../modules/service-operations/engine.mjs';
@@ -31,6 +32,15 @@ mkdirSync(dirname(dbPath), { recursive: true, mode: 0o700 });
 
 const auth = new AuthStore(dbPath);
 auth.bootstrapAdmin(process.env.CMS_ERP_BOOTSTRAP_EMAIL, process.env.CMS_ERP_BOOTSTRAP_PASSWORD);
+const resendApiKey = process.env.RESEND_API_KEY ?? '';
+const resendFromEmail = process.env.RESEND_FROM_EMAIL ?? '';
+if (Boolean(resendApiKey.trim()) !== Boolean(resendFromEmail.trim())) {
+  throw new Error('Configure both RESEND_API_KEY and RESEND_FROM_EMAIL, or leave both empty.');
+}
+const emailSender = resendApiKey.trim()
+  ? createResendEmailSender({ apiKey: resendApiKey, from: resendFromEmail, origin: allowedOrigin })
+  : null;
+if (!emailSender) console.warn(JSON.stringify({ event: 'password_reset_email_disabled' }));
 const content = new ContentService(dbPath);
 const operations = new OperationsService(dbPath, { businessTimezone: process.env.CMS_ERP_TIMEZONE ?? 'Europe/Amsterdam' });
 const mcpEndpoint = createMcpEndpoint({ auth, content, operations, origin: allowedOrigin });
@@ -54,7 +64,8 @@ const handleOperations = createOperationsHandler({
   onError: ({ requestId }) => console.error(JSON.stringify({ event: 'operations_request_error', requestId })),
 });
 
-const loginHtml = `<!doctype html><html lang="nl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Inloggen · CMS/ERP</title><link rel="stylesheet" href="/assets/app.css"></head><body class="login-page"><main class="login-card"><p class="eyebrow">CMS · ERP</p><h1>Inloggen</h1><p>Gebruik het account dat voor deze installatie is ingesteld.</p><form method="post" action="/login"><label>E-mailadres<input name="email" type="email" autocomplete="username" maxlength="254" required></label><label>Wachtwoord<input name="password" type="password" autocomplete="current-password" maxlength="1024" required></label><button type="submit">Inloggen</button><p class="form-error" role="alert">{{ERROR}}</p></form></main></body></html>`;
+const loginHtml = `<!doctype html><html lang="nl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Inloggen · CMS/ERP</title><link rel="stylesheet" href="/assets/app.css"></head><body class="login-page"><main class="login-card"><p class="eyebrow">CMS · ERP</p><h1>Inloggen</h1><p>Gebruik het account dat voor deze installatie is ingesteld.</p><form method="post" action="/login"><label>E-mailadres<input name="email" type="email" autocomplete="username" maxlength="254" required></label><label>Wachtwoord<input name="password" type="password" autocomplete="current-password" maxlength="1024" required></label><button type="submit">Inloggen</button><p class="form-error" role="alert">{{ERROR}}</p></form><p><a href="/password-reset">Wachtwoord vergeten?</a></p></main></body></html>`;
+const passwordResetHtml = `<!doctype html><html lang="nl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Wachtwoord herstellen · CMS/ERP</title><link rel="stylesheet" href="/assets/app.css"><script src="/assets/password-reset.js" defer></script></head><body class="login-page"><main class="login-card"><p class="eyebrow">CMS · ERP</p><h1>Wachtwoord herstellen</h1><p id="reset-intro">Vraag een beveiligde herstellink aan voor je account.</p><form id="request-reset"><label>E-mailadres<input name="email" type="email" autocomplete="email" maxlength="254" required></label><button type="submit">Verstuur herstellink</button></form><form id="complete-reset" hidden><label>Nieuw wachtwoord<input name="password" type="password" autocomplete="new-password" minlength="14" maxlength="1024" required></label><label>Herhaal nieuw wachtwoord<input name="confirm" type="password" autocomplete="new-password" minlength="14" maxlength="1024" required></label><button type="submit">Wachtwoord opslaan</button></form><p id="reset-feedback" class="form-error" role="status" aria-live="polite"></p><p><a href="/login">Terug naar inloggen</a></p></main></body></html>`;
 const adminHtml = readFileSync(resolve(webRoot, 'admin.html'), 'utf8');
 
 function escapeHtml(value) {
@@ -159,6 +170,54 @@ async function route(req, res) {
   if (mcpEndpoint && await mcpEndpoint.handle(req, res)) return;
   if (req.method === 'GET' && url.pathname === '/assets/app.css') return asset(res, 'app.css', 'text/css; charset=utf-8');
   if (req.method === 'GET' && url.pathname === '/assets/admin.js') return asset(res, 'admin.js', 'text/javascript; charset=utf-8');
+  if (req.method === 'GET' && url.pathname === '/assets/password-reset.js') return asset(res, 'password-reset.js', 'text/javascript; charset=utf-8');
+
+  if (req.method === 'POST' && url.pathname === '/api/auth/password-reset/request') {
+    if (req.headers.origin !== allowedOrigin) return json(res, 403, { error: 'ORIGIN_REJECTED', requestId });
+    const input = await readJson(req);
+    if (!input || Object.keys(input).some((key) => key !== 'email') || typeof input.email !== 'string' || input.email.length > 254) {
+      return json(res, 400, { error: 'INVALID_RESET_REQUEST', requestId });
+    }
+    if (!emailSender) return json(res, 202, { data: { message: 'Als herstelinstructies naar dit account kunnen worden gestuurd, ontvang je ze.' } });
+    const rateLimited = !auth.consumeRateLimits([
+      { key: 'password-reset-request:global', limit: 1000, windowMs: 60 * 60 * 1000 },
+      { key: `password-reset-request:ip:${req.socket.remoteAddress ?? 'unknown'}`, limit: 50, windowMs: 60 * 60 * 1000 },
+      { key: `password-reset-request:email:${input.email.trim().toLowerCase()}`, limit: 3, windowMs: 60 * 60 * 1000 },
+    ]);
+    if (rateLimited) return json(res, 202, { data: { message: 'Als herstelinstructies naar dit account kunnen worden gestuurd, ontvang je ze.' } });
+    const reset = auth.createPasswordReset(input.email);
+    if (reset) {
+      const resetUrl = new URL('/password-reset', allowedOrigin);
+      resetUrl.hash = new URLSearchParams({ token: reset.token }).toString();
+      void (async () => {
+        try {
+          await emailSender({ to: reset.email, url: resetUrl.href });
+          if (!auth.activatePasswordReset(reset.token)) throw new Error('RESET_ACTIVATION_FAILED');
+        } catch {
+          try { auth.discardPendingPasswordReset(reset.token); } catch { /* preserve the generic recovery response */ }
+          console.error(JSON.stringify({ event: 'password_reset_email_failed', requestId }));
+        }
+      })();
+    }
+    return json(res, 202, { data: { message: 'Als herstelinstructies naar dit account kunnen worden gestuurd, ontvang je ze.' } });
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/auth/password-reset/complete') {
+    if (req.headers.origin !== allowedOrigin) return json(res, 403, { error: 'ORIGIN_REJECTED', requestId });
+    const input = await readJson(req);
+    if (!input || Object.keys(input).some((key) => !['token', 'newPassword'].includes(key))) {
+      return json(res, 400, { error: 'INVALID_RESET_REQUEST', requestId });
+    }
+    const tokenKey = typeof input.token === 'string' ? input.token.slice(0, 1024) : 'invalid-token';
+    if (!auth.consumeRateLimits([
+      { key: 'password-reset-complete:global', limit: 1000, windowMs: 60 * 60 * 1000 },
+      { key: `password-reset-complete:ip:${req.socket.remoteAddress ?? 'unknown'}`, limit: 100, windowMs: 60 * 60 * 1000 },
+      { key: `password-reset-complete:token:${tokenKey}`, limit: 5, windowMs: 60 * 60 * 1000 },
+    ])) return json(res, 400, { error: 'INVALID_OR_EXPIRED_RESET', requestId });
+    const result = auth.completePasswordReset(input.token, input.newPassword);
+    if (result.error) return json(res, 400, { error: result.error, requestId });
+    return json(res, 200, { data: result.data });
+  }
 
   if (req.method === 'GET' && url.pathname === '/api/auth/session') {
     const actor = auth.actor(req);
@@ -231,6 +290,9 @@ async function route(req, res) {
   if (req.method === 'GET' && url.pathname === '/login') {
     if (auth.actor(req)) return redirect(res, '/admin');
     return send(res, 200, loginHtml.replace('{{ERROR}}', ''));
+  }
+  if (req.method === 'GET' && url.pathname === '/password-reset') {
+    return send(res, 200, passwordResetHtml, 'text/html; charset=utf-8', { 'Referrer-Policy': 'no-referrer' });
   }
   if (req.method === 'POST' && url.pathname === '/login') {
     if (req.headers.origin !== allowedOrigin) return send(res, 403, loginHtml.replace('{{ERROR}}', 'Ongeldige aanmeldpoging.'));
