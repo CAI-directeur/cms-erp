@@ -23,20 +23,57 @@ product import planner.
   WooCommerce product snapshot planner. The host fetches data and reviews the
   plan; this module has no credentials, network access or write operations.
 
-These are building blocks, not a finished CMS website or a deployed ERP. The
-repository does not yet include the host application's login, visual CMS editor,
-organization and tenant management, media library, production deployment or
-live WordPress connector. The HTTP adapters require the host to supply verified
-sessions, CSRF validation, an exact allowed origin, and a private database
-location.
+The repository now also includes a small Node host in `src/` and a browser
+management interface in `web/`. It provides first-run admin setup, session
+login, a basic CMS editor, public content pages, ERP lists and starter forms for
+customers, products and quotes. The host is single-organization and does not
+yet include multi-tenant administration, media uploads, a complete workflow UI,
+production deployment automation or a live WordPress connector. External
+provider integrations and legally reviewed invoice layouts remain separate.
+
+The existing CAI Business OS Site already has its own `/app/cms` interface,
+content collections and owner-review workflow. This host is not wired into that
+Site and must not be deployed over its homepage or CMS route. Read
+[`docs/EXISTING-SITE-INTEGRATION.md`](docs/EXISTING-SITE-INTEGRATION.md) before
+connecting a Site or ACC environment. The Site keeps its current content and
+authentication as the integration authority until an explicit adapter has
+been built and accepted.
+
+## Run the application
+
+Use Node.js 24.19.0 or later within major version 24. Set a unique bootstrap
+password on the first run. These PowerShell commands keep the password in the
+current process environment; do not save real credentials in `.env.example` or
+Git:
+
+```powershell
+$env:CMS_ERP_ORIGIN = 'http://127.0.0.1:3000'
+$env:CMS_ERP_BOOTSTRAP_EMAIL = 'admin@example.test'
+$env:CMS_ERP_BOOTSTRAP_PASSWORD = 'replace-with-a-long-unique-password'
+npm start
+```
+
+Open `http://127.0.0.1:3000`. The first run creates the admin account only when
+the database has no users. Later restarts do not reset its password. The
+SQLite database is stored under the ignored `var/` directory by default; set
+`CMS_ERP_DATABASE` to a private absolute path for deployment. Production needs
+an exact `CMS_ERP_ORIGIN` using HTTPS, secure cookies, TLS at the public edge,
+backups, monitoring and a persistent private data volume.
+
+The first admin can use the content and ERP screens and provision role-based
+accounts. Password reset, account recovery, MFA, tenant isolation and a complete
+team administration flow are not implemented yet.
 
 ## Verify the modules
 
 Use Node.js 24.19.0 or later within major version 24. From the repository root:
 
 ```sh
-node --test integrations/wordpress-contract/domain.test.mjs modules/content-management/*.test.mjs modules/service-operations/*.test.mjs integrations/wordpress-import/*.test.mjs
+node --test test/*.test.mjs integrations/wordpress-contract/*.test.mjs modules/content-management/*.test.mjs modules/service-operations/*.test.mjs integrations/wordpress-import/*.test.mjs
 ```
 
-There are no npm runtime dependencies. Each component directory contains its
-applicable license and detailed integration boundaries.
+The API suite starts the local host with a temporary SQLite database and
+synthetic credentials; it does not connect to ACC, production or a live Site.
+
+There are no npm runtime dependencies. The host and modules are GPL-3.0-or-later;
+each component directory contains its detailed integration boundaries.
