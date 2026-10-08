@@ -21,10 +21,14 @@ boundaries, HTTP routes and UI escaping remain application work.
 
 The WordPress chat reported an unpushed local branch `feature/service-operations`
 at HEAD `f1f7e118e1a699639bc1e284c36d6c1831388597` and module code commit
-`8a8b6d40e2b62b30cc0fe814bed142a490b92d7d`, plus a bundle in its private task
-sandbox. That source bundle is not available in this local checkout. This
-branch is a documented-contract implementation, not a claim that the WordPress
-chat's complete plugin or import adapter has been merged.
+`8a8b6d40e2b62b30cc0fe814bed142a490b92d7d`. It clarified that the public
+`HANDOFF.md` is not the full later implementation: the complete source has 15
+runtime, test, documentation and WordPress-import files. The bundle is in its
+private task sandbox, and the text copy is in a private Notion page. The current
+browser account has no access to that page, so those files have not been
+inspected or imported here. The module in this branch is only a documented-
+contract implementation; it is not the complete WordPress plugin or import
+adapter.
 
 ## Existing WordPress contract
 
