@@ -1,13 +1,23 @@
 # CAI Business OS delivery goal
 
-Status: approved delivery scope; implementation and release evidence are tracked
-separately. Updated 9 October 2026.
+Status: active, updateable delivery scope; implementation and release evidence
+are tracked separately. Updated 9 October 2026.
+
+This goal is a living project control document. The Scrum Master updates scope,
+sequence, card mapping and remaining acceptance criteria when live board reads,
+accepted Product Owner decisions, source verification or release evidence
+change the plan. Record each material update with date, reason and evidence;
+the Product Owner retains product decisions and final acceptance.
 
 ## Product and primary board
 
-Deliver CAI-Techniek.nl and CAI Business OS as a working, secure, maintainable,
-open-source system covering the website, CMS/ERP, customer login, administration,
-integrations and a distributable ChatGPT plugin package.
+Deliver the complete CAI-Techniek.nl website and CAI Business OS as a working,
+secure, maintainable, open-source product: frontend, backend and full-stack
+journeys; UI, APIs, data and storage, authentication and customer/staff portals,
+CMS/ERP, integrations, webhooks, operations, the production scrumboard and a
+distributable ChatGPT plugin package. CMS/ERP is one product area, not the whole
+website. Every scrum card is a measurable subgoal tied to a sprint milestone,
+owner role, dependencies, Definition of Done, source/environment and evidence.
 
 The [website scrum board](https://www.cai-techniek.nl/app/board) is the primary
 project record from now on. It tracks local, DEV, TEST/ACC and PROD work. Card
@@ -15,12 +25,19 @@ status describes work progress; execution environment, source artifact, release
 state and evidence are separate fields. A completed local test must never be
 presented as a production deployment.
 
-Weft is the historical and migration source. Preserve the last readable export
-and card identifiers, reconcile the existing records against the website board,
-and finish the legitimate approved backlog. Record the actual Weft read or write
-result when available; do not claim Done or migration parity when the interface
-cannot confirm it. A service limit is an explicit reconciliation dependency and
-does not prevent independent website-board development.
+Weft is only a historical and migration source. Its monthly AI read limit has
+been reached; use saved snapshots/exports for crosswalk and recovery, and do not
+make delivery depend on another live Weft read or write. Preserve source card
+identifiers, reconcile available records against the website board, and finish
+the approved backlog there. Missing history remains explicit recovery work.
+
+The latest available board snapshot named five sprint themes: Sprint 1 — veilige
+toegang; Sprint 2 — dossiers en uploads; Sprint 3 — klant en CMS; Sprint 4 —
+connectorfundament; Sprint 5 — gecontroleerde pilots. These names are historical
+until a fresh live board read confirms them. Map every live card to its actual
+sprint and a full-stack product outcome; the live board determines the true
+sequence, status and dependencies. Keep Weft parity/retirement as a cross-cutting
+subgoal of the actual website-board roadmap.
 
 ## Delivery streams
 
@@ -85,14 +102,22 @@ private records or customer data.
 ## Team and execution protocol
 
 Use Scrum for sprint goals, planning, backlog, review and Definition of Done;
-use Kanban rules for WIP and blocked work inside the sprint. The Product Owner
-owns product choices. The coordinating chat is Scrum Master and Delivery Lead.
+use Kanban rules for WIP and blocked work inside the sprint. Execute strictly
+sequentially: one Ready card and one active execution at a time. The Product
+Owner owns product choices. The coordinating chat is Scrum Master and Delivery
+Lead. Maintain one operational team/capability roster in
+`docs/WEBSITE-BACKEND-TEAM-ROSTER.md`; reuse chats by context and capability
+instead of creating a new conversation for each role or card.
 
 - Assign every work package to an actual board card and sprint, or explicitly
   record the unresolved mapping. An internal assignment ID is not a board card.
 - Each assignment states priority, outcome, host, source, environment, owner,
   timebox/checkpoint, dependencies, file/record ownership, acceptance criteria,
   appropriate Skills, report route and next action.
+- Git publication is part of each card increment: record the intended remote
+  branch/PR and starting SHA, commit only the reviewed card scope after relevant
+  checks, push, and read back remote SHA/CI. Never let completed work accumulate
+  as an unreviewed commit backlog; exclude secrets and private records.
 - Local Codex workers own local code, tests, package preparation and CLI work.
   Work/Sites workers own supported Site source, configuration, deployment and
   board actions. Assign work according to demonstrated capability.
@@ -116,10 +141,9 @@ owns product choices. The coordinating chat is Scrum Master and Delivery Lead.
 - Keep a durable compact ownership and evidence ledger. The board steward
   writes progress and directly reads each mutation back; workers without write
   capability send receipts through the coordinator.
-- Check progress at least hourly while the goal is active. Provide the Product
-  Owner a factual update every two hours through the configured private mail
-  route. A send receipt, provider receipt and actual delivery are different
-  claims; private mailbox state does not belong in this public repository.
+- The periodic progress and mail automations are deleted. Report to the Product
+  Owner at meaningful milestones, completed worker reports, blockers or when a
+  decision is needed. A dispatch receipt is not evidence of execution.
 
 ## Acceptance gates
 
